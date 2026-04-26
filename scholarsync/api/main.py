@@ -39,13 +39,9 @@ from scholarsync.ingestion.chunker import chunk_document
 from scholarsync.rag.vector_store import add_chunks, reset_collection
 from scholarsync.workflow.langgraph_pipeline import run_pipeline
 
-# Chat module
-from scholarsync.chat.router import router as chat_router
-from scholarsync.chat.database import init_db as init_chat_db, close_db as close_chat_db
-from scholarsync.chat.firebase_auth import init_firebase
-
-# Auth module (local username/password)
+# Auth module (local username/password + user chat)
 from scholarsync.auth.router import router as auth_router
+from scholarsync.auth.chat_router import router as user_chat_router
 from scholarsync.auth.database import init_auth_db
 
 logger = get_logger(__name__)
@@ -64,26 +60,17 @@ async def lifespan(app: FastAPI):
     os.makedirs(settings.reports_dir, exist_ok=True)
     os.makedirs(settings.chroma_persist_dir, exist_ok=True)
 
-    # Initialize local auth database (SQLite)
+    # Initialize local auth + chat database (SQLite)
     try:
         await init_auth_db()
-        logger.info("Auth database initialized (SQLite)")
+        logger.info("Auth/Chat database initialized (SQLite)")
     except Exception as e:
         logger.warning("Auth DB init failed (non-fatal): %s", e)
-
-    # Initialize chat subsystem (MongoDB + Firebase)
-    try:
-        init_firebase()
-        await init_chat_db()
-        logger.info("Chat subsystem initialized (MongoDB + Firebase)")
-    except Exception as e:
-        logger.warning("Chat subsystem init failed (non-fatal): %s", e)
 
     logger.info("ScholarSync API starting up")
     yield
 
     # Shutdown
-    await close_chat_db()
     logger.info("ScholarSync API shutting down")
 
 
@@ -108,8 +95,8 @@ app.add_middleware(
 # Auth router (local username/password)
 app.include_router(auth_router)
 
-# Chat router
-app.include_router(chat_router)
+# User chat router (SQLite-backed, user-isolated)
+app.include_router(user_chat_router)
 
 
 # ── Health Check ────────────────────────────────────────────────────
@@ -139,15 +126,8 @@ async def health_check():
     except Exception:
         services["chromadb"] = "unavailable"
 
-    # Check MongoDB
-    try:
-        from scholarsync.chat.database import check_connection
-        if await check_connection():
-            services["mongodb"] = "connected"
-        else:
-            services["mongodb"] = "unavailable"
-    except Exception:
-        services["mongodb"] = "unavailable"
+    # SQLite is always available (local file)
+    services["auth_db"] = "ok"
 
     return HealthResponse(
         status="ok",

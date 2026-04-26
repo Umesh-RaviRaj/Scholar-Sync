@@ -1,1 +1,1 @@
-"""Chat module — multi-user personalized chat with persistent history."""
+"""Chat module — mode routing and LLM integration for ScholarSync queries."""

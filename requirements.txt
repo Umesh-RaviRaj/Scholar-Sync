@@ -25,11 +25,8 @@ PyMuPDF==1.25.2
 # Utilities
 python-dotenv==1.0.1
 
-# Chat Module — Multi-User Persistence & Auth
-motor==3.6.0
-firebase-admin==6.6.0
-
 # Authentication (Local — SQLite + bcrypt + JWT)
-# bcrypt is already installed (dependency of firebase-admin)
+bcrypt==4.2.1
 python-jose[cryptography]==3.3.0
 aiosqlite==0.20.0
+

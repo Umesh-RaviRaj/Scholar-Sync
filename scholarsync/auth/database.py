@@ -59,6 +59,8 @@ async def get_auth_db() -> aiosqlite.Connection:
     db.row_factory = aiosqlite.Row
     # Enable WAL mode for better concurrent read performance
     await db.execute("PRAGMA journal_mode=WAL")
+    # Enable foreign keys (required for ON DELETE CASCADE)
+    await db.execute("PRAGMA foreign_keys=ON")
     return db
 
 
@@ -71,6 +73,7 @@ async def init_auth_db() -> None:
     logger.info("Initializing auth database at: %s", db_path)
 
     async with aiosqlite.connect(db_path) as db:
+        # 1. Users table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS auth_users (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,11 +83,44 @@ async def init_auth_db() -> None:
                 created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        # Index for fast username lookups during login
+        # Index for fast username lookups
         await db.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_users_username
             ON auth_users (username)
         """)
+
+        # 2. Chat threads table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS chats (
+                id          TEXT PRIMARY KEY,
+                user_id     INTEGER NOT NULL,
+                title       TEXT NOT NULL DEFAULT 'New Review',
+                mode        TEXT NOT NULL DEFAULT 'normal',
+                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_chats_user_id ON chats(user_id)")
+
+        # 3. Messages table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id          TEXT PRIMARY KEY,
+                chat_id     TEXT NOT NULL,
+                role        TEXT NOT NULL,
+                type        TEXT NOT NULL DEFAULT 'text',
+                content     TEXT,
+                file_name   TEXT,
+                file_size   TEXT,
+                report_markdown TEXT,
+                timestamp   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id)")
+
         await db.commit()
 
-    logger.info("Auth database initialized successfully")
+    logger.info("Auth/Chat database initialized successfully")
+
