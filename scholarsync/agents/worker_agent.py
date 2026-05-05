@@ -11,9 +11,8 @@ from __future__ import annotations
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from groq import Groq
-
 from scholarsync.config.settings import get_settings
+from scholarsync.chat.key_manager import get_key_manager
 from scholarsync.rag.vector_store import search as vector_search
 from scholarsync.utils.logger import get_logger
 from scholarsync.utils.schemas import (
@@ -68,7 +67,7 @@ def extract_from_paper(
     Uses RAG to retrieve relevant chunks, then LLM to extract structured knowledge.
     """
     settings = get_settings()
-    client = Groq(api_key=settings.groq_api_key)
+    km = get_key_manager()
 
     # ── Retrieve relevant chunks via vector search ──────────────────
     search_query = f"{subtask.prompt} {subtask.description}"
@@ -111,11 +110,10 @@ Specific Instructions: {subtask.prompt}
 Extract structured knowledge from the above text chunks. Focus on {subtask.task_type.value}.
 Output valid JSON only."""
 
-    # ── Call Groq LLM ───────────────────────────────────────────────
+    # ── Call Groq LLM (via KeyManager for rotation/failover) ────────
     logger.info("Worker: extracting %s from '%s'", subtask.task_type.value, paper_title)
 
-    response = client.chat.completions.create(
-        model=settings.groq_model,
+    raw_text = km.call_llm(
         messages=[
             {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
@@ -124,8 +122,6 @@ Output valid JSON only."""
         max_tokens=settings.groq_max_tokens,
         response_format={"type": "json_object"},
     )
-
-    raw_text = response.choices[0].message.content.strip()
 
     # ── Parse response into Pydantic model ──────────────────────────
     try:
@@ -176,7 +172,8 @@ Output valid JSON only."""
 def run_worker_agents(
     subtasks: list[SubTask],
     paper_metadata: list[PaperMetadata],
-    max_workers: int = 4,
+    max_workers: int = 2,
+    session_id: str | None = None,
 ) -> list[ExtractedKnowledge]:
     """
     Execute all worker agents in parallel.
@@ -213,6 +210,7 @@ def run_worker_agents(
             try:
                 extraction = future.result()
                 all_extractions.append(extraction)
+                msg = f"  ↳ Worker completed: {subtask.task_type.value} for paper '{paper_map[paper_id].title[:20]}...' ({len(extraction.entities)} entities, {len(extraction.findings)} findings)"
                 logger.info(
                     "Worker completed: %s for paper %s (%d entities, %d findings)",
                     subtask.task_type.value,
@@ -220,6 +218,12 @@ def run_worker_agents(
                     len(extraction.entities),
                     len(extraction.findings),
                 )
+                if session_id:
+                    try:
+                        from scholarsync.chat.mode_router import enqueue_thought
+                        enqueue_thought(session_id, msg)
+                    except Exception:
+                        pass
             except Exception as e:
                 logger.error(
                     "Worker failed: %s for paper %s: %s",

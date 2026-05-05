@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     groq_api_keys: list[str] = []  # Extra keys for rotation
     groq_model: str = "llama-3.3-70b-versatile"
     groq_temperature: float = 0.1
-    groq_max_tokens: int = 4096
+    groq_max_tokens: int = 4096  # Safe default; synthesizer uses its own limit
 
     # ── Mode Defaults ────────────────────────────────────────────────
     normal_mode_top_k: int = 5

@@ -77,19 +77,40 @@ def manager_node(state: GraphState) -> GraphState:
     """Manager Agent: decompose query into subtasks."""
     logger.info("Pipeline: Manager Agent starting")
     state["status"] = PipelineStatus.PLANNING.value
-    state["progress_messages"].append("🧠 Manager Agent: Analyzing research query...")
+    msg = "🧠 Manager Agent: Analyzing research query..."
+    state["progress_messages"].append(msg)
+    
+    try:
+        from scholarsync.chat.mode_router import enqueue_thought
+        enqueue_thought(state["session_id"], msg)
+    except Exception:
+        pass
 
     try:
         paper_metadata = [PaperMetadata(**p) for p in state["paper_metadata"]]
         subtasks = decompose_query(state["query"], paper_metadata)
         state["subtasks"] = [st.model_dump() for st in subtasks]
-        state["progress_messages"].append(
-            f"✅ Manager Agent: Created {len(subtasks)} subtasks"
-        )
+        
+        success_msg = f"✅ Manager Agent: Created {len(subtasks)} subtasks"
+        state["progress_messages"].append(success_msg)
+        try:
+            from scholarsync.chat.mode_router import enqueue_thought
+            for st in subtasks:
+                enqueue_thought(state["session_id"], f"  ↳ Subtask: {st.task_type.value} - {st.description}")
+            enqueue_thought(state["session_id"], success_msg)
+        except Exception:
+            pass
+
     except Exception as e:
+        err_msg = f"❌ Manager Agent error: {str(e)}"
         logger.error("Manager Agent error: %s", e)
         state["errors"].append(f"Manager Agent error: {str(e)}")
-        state["progress_messages"].append(f"❌ Manager Agent error: {str(e)}")
+        state["progress_messages"].append(err_msg)
+        try:
+            from scholarsync.chat.mode_router import enqueue_thought
+            enqueue_thought(state["session_id"], err_msg)
+        except Exception:
+            pass
 
     return state
 
@@ -98,20 +119,42 @@ def worker_node(state: GraphState) -> GraphState:
     """Worker Agents: extract structured knowledge in parallel."""
     logger.info("Pipeline: Worker Agents starting")
     state["status"] = PipelineStatus.EXTRACTING.value
-    state["progress_messages"].append("⛏️ Worker Agents: Extracting knowledge from papers...")
+    msg = "⛏️ Worker Agents: Extracting knowledge from papers..."
+    state["progress_messages"].append(msg)
+    try:
+        from scholarsync.chat.mode_router import enqueue_thought
+        enqueue_thought(state["session_id"], msg)
+    except Exception:
+        pass
 
     try:
         subtasks = [SubTask(**st) for st in state["subtasks"]]
         paper_metadata = [PaperMetadata(**p) for p in state["paper_metadata"]]
-        extractions = run_worker_agents(subtasks, paper_metadata)
+        from scholarsync.chat.mode_router import enqueue_thought
+        try:
+            enqueue_thought(state["session_id"], f"  ↳ Running {len(subtasks)*len(paper_metadata)} extraction jobs in parallel...")
+        except Exception:
+            pass
+            
+        extractions = run_worker_agents(subtasks, paper_metadata, session_id=state["session_id"])
         state["extractions"] = [ext.model_dump() for ext in extractions]
-        state["progress_messages"].append(
-            f"✅ Worker Agents: Completed {len(extractions)} extractions"
-        )
+        
+        success_msg = f"✅ Worker Agents: Completed {len(extractions)} extractions"
+        state["progress_messages"].append(success_msg)
+        try:
+            enqueue_thought(state["session_id"], success_msg)
+        except Exception:
+            pass
     except Exception as e:
+        err_msg = f"❌ Worker Agents error: {str(e)}"
         logger.error("Worker Agents error: %s", e)
         state["errors"].append(f"Worker Agents error: {str(e)}")
-        state["progress_messages"].append(f"❌ Worker Agents error: {str(e)}")
+        state["progress_messages"].append(err_msg)
+        try:
+            from scholarsync.chat.mode_router import enqueue_thought
+            enqueue_thought(state["session_id"], err_msg)
+        except Exception:
+            pass
 
     return state
 

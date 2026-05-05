@@ -8,9 +8,8 @@ from __future__ import annotations
 
 import json
 
-from groq import Groq
-
 from scholarsync.config.settings import get_settings
+from scholarsync.chat.key_manager import get_key_manager
 from scholarsync.rag.vector_store import search as vector_search
 from scholarsync.utils.logger import get_logger
 from scholarsync.utils.schemas import (
@@ -73,7 +72,7 @@ def validate_extraction(
     the extracted claims against the source material.
     """
     settings = get_settings()
-    client = Groq(api_key=settings.groq_api_key)
+    km = get_key_manager()
 
     # ── Gather all claims to validate ───────────────────────────────
     all_claims = []
@@ -133,15 +132,14 @@ Claims/Findings to Validate:
 
 Validate each claim against the source text. Output valid JSON only."""
 
-    # ── Call Groq LLM ───────────────────────────────────────────────
+    # ── Call Groq LLM (via KeyManager for rotation/failover) ────────
     logger.info(
         "Checking Agent: validating %d claims from '%s'",
         len(all_claims),
         extraction.paper_title,
     )
 
-    response = client.chat.completions.create(
-        model=settings.groq_model,
+    raw_text = km.call_llm(
         messages=[
             {"role": "system", "content": CHECKING_SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
@@ -150,8 +148,6 @@ Validate each claim against the source text. Output valid JSON only."""
         max_tokens=settings.groq_max_tokens,
         response_format={"type": "json_object"},
     )
-
-    raw_text = response.choices[0].message.content.strip()
 
     # ── Parse response ──────────────────────────────────────────────
     try:
@@ -200,17 +196,27 @@ Validate each claim against the source text. Output valid JSON only."""
 
 def validate_all_extractions(
     extractions: list[ExtractedKnowledge],
+    session_id: str | None = None,
 ) -> list[ValidationResult]:
     """
-    Validate all worker extractions. Returns a list of validation results.
+    Validate all worker extractions in parallel.
     """
-    logger.info("Checking Agent: validating %d extractions", len(extractions))
+    import concurrent.futures
+
+    logger.info("Checking Agent: validating %d extractions in parallel", len(extractions))
     results = []
 
-    for extraction in extractions:
+    def _validate(extraction):
         try:
             result = validate_extraction(extraction)
-            results.append(result)
+            msg = f"  ↳ Checked extraction {extraction.subtask_type.value} for paper '{extraction.paper_title[:20]}...': Score {result.overall_score:.2f} ({'Valid' if result.is_valid else 'Needs Revision'})"
+            if session_id:
+                try:
+                    from scholarsync.chat.mode_router import enqueue_thought
+                    enqueue_thought(session_id, msg)
+                except Exception:
+                    pass
+            return result
         except Exception as e:
             logger.error(
                 "Checking Agent: validation failed for %s/%s: %s",
@@ -218,13 +224,17 @@ def validate_all_extractions(
                 extraction.subtask_type.value,
                 e,
             )
-            results.append(
-                ValidationResult(
-                    overall_score=0.0,
-                    is_valid=False,
-                    feedback=f"Validation error: {str(e)}",
-                )
+            return ValidationResult(
+                overall_score=0.0,
+                is_valid=False,
+                feedback=f"Validation error: {str(e)}",
             )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        future_to_ext = {executor.submit(_validate, ext): ext for ext in extractions}
+        for future in concurrent.futures.as_completed(future_to_ext):
+            res = future.result()
+            results.append(res)
 
     avg_score = sum(r.overall_score for r in results) / len(results) if results else 0.0
     valid_count = sum(1 for r in results if r.is_valid)

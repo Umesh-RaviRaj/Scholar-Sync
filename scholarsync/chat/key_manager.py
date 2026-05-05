@@ -1,6 +1,11 @@
 """
-API Key Rotation Manager — round-robin key selection with automatic
-failover, per-key usage tracking, and thread-safe retry logic.
+API Key Rotation Manager — production-grade round-robin key selection with:
+  - True concurrent-safe rotation (separate lock per operation)
+  - Per-key Groq client caching (avoid recreating on every call)
+  - Immediate failover on rate-limit (switch to next key, don't wait)
+  - Smart wait-for-cooldown when ALL keys are exhausted
+  - Per-key token budget tracking (resets every 60 s)
+  - Thread-safe index bump ensures no two parallel calls share the same key
 
 Used as the single entry-point for all Groq LLM calls across the system.
 """
@@ -10,7 +15,7 @@ from __future__ import annotations
 import time
 import threading
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Iterator
 
 from groq import Groq
 
@@ -20,80 +25,173 @@ from scholarsync.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-# ── Exceptions ───────────────────────────────────────────────────────
+# ── Exceptions ────────────────────────────────────────────────────────
 
 class AllKeysExhaustedError(Exception):
-    """Raised when every available API key has failed."""
+    """Raised when every available API key has failed or timed out."""
     pass
 
 
-# ── Per-key state ────────────────────────────────────────────────────
+# ── Per-key state ─────────────────────────────────────────────────────
 
 @dataclass
 class _KeyState:
     key: str
+    index: int                    # Position in the pool
     request_count: int = 0
     failure_count: int = 0
     last_used: float = 0.0
     disabled_until: float = 0.0  # Unix timestamp; 0 = enabled
+    tokens_this_minute: int = 0  # Rolling token count
+    minute_window_start: float = field(default_factory=time.time)
+
+    # Cached Groq client — created once per key, reused across calls
+    _client: Groq | None = field(default=None, repr=False, compare=False)
+
+    def client(self) -> Groq:
+        if self._client is None:
+            self._client = Groq(api_key=self.key)
+        return self._client
 
     @property
     def is_active(self) -> bool:
         return time.time() >= self.disabled_until
 
+    def cooldown_remaining(self) -> float:
+        return max(0.0, self.disabled_until - time.time())
 
-# ── Singleton Manager ───────────────────────────────────────────────
+    def record_tokens(self, n: int) -> None:
+        """Track tokens used in the current 60 s window."""
+        now = time.time()
+        if now - self.minute_window_start >= 60.0:
+            self.tokens_this_minute = 0
+            self.minute_window_start = now
+        self.tokens_this_minute += n
+
+
+# ── Singleton Manager ─────────────────────────────────────────────────
 
 class KeyManager:
-    """Thread-safe round-robin API key manager with failover."""
+    """
+    Thread-safe round-robin API key manager.
 
-    _instance: KeyManager | None = None
-    _lock = threading.Lock()
+    Design principles:
+    - Each call atomically claims the NEXT available key via a shared index.
+    - If the chosen key is rate-limited, it is immediately disabled and the
+      next key in the pool is tried (no wasted retry on the same key).
+    - When ALL keys are cooling down, the caller blocks until the soonest
+      cooldown expires, then retries — no hard fail on first exhaustion.
+    - Groq clients are cached per-key to avoid connection overhead.
+    """
 
-    def __new__(cls) -> KeyManager:
+    _instance: "KeyManager | None" = None
+    _class_lock = threading.Lock()
+
+    def __new__(cls) -> "KeyManager":
         if cls._instance is None:
-            with cls._lock:
+            with cls._class_lock:
                 if cls._instance is None:
-                    cls._instance = super().__new__(cls)
-                    cls._instance._initialized = False
+                    obj = super().__new__(cls)
+                    obj._ready = False
+                    cls._instance = obj
         return cls._instance
 
     def __init__(self) -> None:
-        if self._initialized:
+        if self._ready:
             return
-        self._initialized = True
+        self._ready = True
 
         settings = get_settings()
 
-        # Build key list: extra keys from GROQ_API_KEYS + the primary key
+        # Deduplicate: GROQ_API_KEYS list + primary GROQ_API_KEY
+        seen: set[str] = set()
         raw_keys: list[str] = []
-        if settings.groq_api_keys:
-            raw_keys.extend(settings.groq_api_keys)
-        if settings.groq_api_key and settings.groq_api_key not in raw_keys:
-            raw_keys.append(settings.groq_api_key)
+        for k in list(settings.groq_api_keys) + [settings.groq_api_key]:
+            if k and k not in seen:
+                seen.add(k)
+                raw_keys.append(k)
 
         if not raw_keys:
-            raise ValueError("No Groq API keys configured. Set GROQ_API_KEY or GROQ_API_KEYS.")
+            raise ValueError(
+                "No Groq API keys configured. Set GROQ_API_KEY or GROQ_API_KEYS in .env"
+            )
 
-        self._keys: list[_KeyState] = [_KeyState(key=k) for k in raw_keys]
-        self._index = 0
-        self._mu = threading.Lock()
+        self._pool: list[_KeyState] = [
+            _KeyState(key=k, index=i) for i, k in enumerate(raw_keys)
+        ]
+        self._rr_index: int = 0          # Round-robin cursor
+        self._mu = threading.Lock()       # Protects pool state + cursor
 
-        logger.info("KeyManager initialized with %d API key(s)", len(self._keys))
+        logger.info(
+            "KeyManager ready — %d key(s): [%s]",
+            len(self._pool),
+            ", ".join(f"...{ks.key[-8:]}" for ks in self._pool),
+        )
 
-    # ── Key selection (round-robin) ──────────────────────────────────
+    # ── Internal helpers ──────────────────────────────────────────────
 
-    def _next_active_key(self) -> _KeyState | None:
-        """Pick the next active key in round-robin order."""
-        n = len(self._keys)
+    def _claim_next_active(self) -> "_KeyState | None":
+        """
+        Atomically advance the round-robin cursor and return the next
+        active (non-cooling-down) key.  Returns None if all are disabled.
+        Must be called with self._mu held.
+        """
+        n = len(self._pool)
         for _ in range(n):
-            ks = self._keys[self._index % n]
-            self._index += 1
+            ks = self._pool[self._rr_index % n]
+            self._rr_index += 1
             if ks.is_active:
                 return ks
         return None
 
-    # ── Public: call LLM with automatic retry ────────────────────────
+    def _soonest_available(self) -> float:
+        """Return seconds until the next key becomes active. Must hold _mu."""
+        now = time.time()
+        return max(0.0, min(ks.disabled_until for ks in self._pool) - now)
+
+    def _disable_key(self, ks: "_KeyState", cooldown: float = 65.0) -> None:
+        """Mark a key as rate-limited for `cooldown` seconds. Must hold _mu."""
+        ks.disabled_until = time.time() + cooldown
+        ks.failure_count += 1
+        logger.warning(
+            "Key ...%s disabled for %.0fs (failure #%d)",
+            ks.key[-8:], cooldown, ks.failure_count,
+        )
+
+    def _wait_for_any_key(self, timeout: float = 70.0) -> "_KeyState | None":
+        """
+        Block (releasing the lock between polls) until at least one key
+        becomes active, then return it.  Returns None on timeout.
+        """
+        deadline = time.time() + timeout
+        while True:
+            with self._mu:
+                ks = self._claim_next_active()
+                if ks is not None:
+                    return ks
+                wait_secs = self._soonest_available()
+
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return None
+
+            sleep_secs = min(wait_secs + 0.2, remaining)   # +0.2 s buffer
+            logger.info(
+                "All %d keys cooling — waiting %.1fs before retry",
+                len(self._pool), sleep_secs,
+            )
+            time.sleep(sleep_secs)
+
+    @staticmethod
+    def _is_rate_limit_error(err_str: str) -> bool:
+        patterns = (
+            "rate_limit", "rate limit", "429",
+            "quota", "too many request", "capacity",
+            "overloaded", "tokens per min", "requests per min",
+        )
+        return any(p in err_str for p in patterns)
+
+    # ── Public API ────────────────────────────────────────────────────
 
     def call_llm(
         self,
@@ -103,81 +201,86 @@ class KeyManager:
         temperature: float | None = None,
         max_tokens: int | None = None,
         response_format: dict | None = None,
-        max_retries: int = 3,
+        max_retries: int = 6,
     ) -> str:
         """
-        Call Groq LLM chat completions with automatic key rotation.
+        Call Groq with true round-robin rotation.
 
-        Returns:
-            The assistant's response text.
-
-        Raises:
-            AllKeysExhaustedError: If every key has been tried and failed.
+        On each attempt a DIFFERENT key is chosen (never the same key
+        twice in a row unless it's the only active one).  When a key
+        is rate-limited it is immediately disabled and the next key is
+        tried on the very next attempt — no wasted wait inside the loop.
+        Only when ALL keys are disabled does it block until one recovers.
         """
         settings = get_settings()
         _model = model or settings.groq_model
-        _temperature = temperature if temperature is not None else settings.groq_temperature
-        _max_tokens = max_tokens or settings.groq_max_tokens
+        _temp  = temperature if temperature is not None else settings.groq_temperature
+        _toks  = max_tokens or settings.groq_max_tokens
 
         last_error: Exception | None = None
 
         for attempt in range(max_retries):
+            # ── Claim a key ──────────────────────────────────────────
             with self._mu:
-                ks = self._next_active_key()
+                ks = self._claim_next_active()
 
             if ks is None:
-                logger.error("All API keys exhausted (attempt %d/%d)", attempt + 1, max_retries)
-                raise AllKeysExhaustedError(
-                    "All Groq API keys are rate-limited or failed. "
-                    "Please wait and try again later."
+                logger.warning(
+                    "All keys cooling down (attempt %d/%d) — blocking until one recovers…",
+                    attempt + 1, max_retries,
                 )
+                ks = self._wait_for_any_key(timeout=70.0)
+                if ks is None:
+                    break   # Timed out — fall through to raise
 
+            # ── Fire the request ─────────────────────────────────────
             try:
-                client = Groq(api_key=ks.key)
                 kwargs: dict[str, Any] = {
                     "model": _model,
                     "messages": messages,
-                    "temperature": _temperature,
-                    "max_tokens": _max_tokens,
+                    "temperature": _temp,
+                    "max_tokens": _toks,
                 }
                 if response_format:
                     kwargs["response_format"] = response_format
 
-                response = client.chat.completions.create(**kwargs)
+                response = ks.client().chat.completions.create(**kwargs)
+                text = response.choices[0].message.content.strip()
 
-                # Success
+                # Track usage
+                usage = getattr(response, "usage", None)
+                tokens_used = getattr(usage, "completion_tokens", _toks) if usage else _toks
                 with self._mu:
                     ks.request_count += 1
                     ks.last_used = time.time()
+                    ks.failure_count = 0
+                    ks.record_tokens(tokens_used)
 
-                text = response.choices[0].message.content.strip()
                 logger.info(
-                    "LLM call succeeded (key ...%s, attempt %d)",
-                    ks.key[-6:], attempt + 1,
+                    "LLM OK — key ...%s | attempt %d | ~%d tokens",
+                    ks.key[-8:], attempt + 1, tokens_used,
                 )
                 return text
 
             except Exception as e:
                 last_error = e
                 err_str = str(e).lower()
+                logger.warning(
+                    "LLM error — key ...%s | attempt %d/%d | %s",
+                    ks.key[-8:], attempt + 1, max_retries, e,
+                )
                 with self._mu:
-                    ks.failure_count += 1
-                    # On rate-limit, disable key for 60 seconds
-                    if "rate" in err_str or "429" in err_str or "limit" in err_str:
-                        ks.disabled_until = time.time() + 60
-                        logger.warning(
-                            "Key ...%s rate-limited, disabled for 60s. Rotating.",
-                            ks.key[-6:],
-                        )
+                    if self._is_rate_limit_error(err_str):
+                        self._disable_key(ks, cooldown=65.0)
                     else:
-                        logger.warning(
-                            "Key ...%s failed: %s. Rotating.",
-                            ks.key[-6:], e,
-                        )
+                        ks.failure_count += 1
+                # Non-rate-limit error: tiny backoff before trying next key
+                if not self._is_rate_limit_error(str(last_error).lower()):
+                    time.sleep(min(2 ** attempt, 8))
 
-        # All retries exhausted
         raise AllKeysExhaustedError(
-            f"All API keys failed after {max_retries} attempts. Last error: {last_error}"
+            f"All {len(self._pool)} API key(s) failed after {max_retries} attempts. "
+            f"Last error: {last_error}"
         )
 
     def call_llm_stream(
@@ -187,81 +290,109 @@ class KeyManager:
         model: str | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
-        max_retries: int = 3,
-    ):
+        max_retries: int = 6,
+    ) -> Iterator[str]:
         """
-        Stream Groq LLM chat completions with automatic key rotation.
-
-        Yields:
-            Text chunks as they arrive.
+        Stream Groq completions with the same round-robin rotation as
+        call_llm.  Yields text chunks as they arrive.
         """
         settings = get_settings()
         _model = model or settings.groq_model
-        _temperature = temperature if temperature is not None else settings.groq_temperature
-        _max_tokens = max_tokens or settings.groq_max_tokens
+        _temp  = temperature if temperature is not None else settings.groq_temperature
+        _toks  = max_tokens or settings.groq_max_tokens
 
         last_error: Exception | None = None
 
         for attempt in range(max_retries):
             with self._mu:
-                ks = self._next_active_key()
+                ks = self._claim_next_active()
 
             if ks is None:
-                raise AllKeysExhaustedError("All Groq API keys are rate-limited or failed.")
+                logger.warning(
+                    "All stream keys cooling (attempt %d/%d) — waiting…",
+                    attempt + 1, max_retries,
+                )
+                ks = self._wait_for_any_key(timeout=70.0)
+                if ks is None:
+                    break
 
             try:
-                client = Groq(api_key=ks.key)
-                stream = client.chat.completions.create(
+                stream = ks.client().chat.completions.create(
                     model=_model,
                     messages=messages,
-                    temperature=_temperature,
-                    max_tokens=_max_tokens,
+                    temperature=_temp,
+                    max_tokens=_toks,
                     stream=True,
                 )
-
                 with self._mu:
                     ks.request_count += 1
                     ks.last_used = time.time()
+                    ks.failure_count = 0
 
+                chunks_seen = 0
                 for chunk in stream:
                     delta = chunk.choices[0].delta
                     if delta and delta.content:
+                        chunks_seen += 1
                         yield delta.content
 
-                return  # Success — exit retry loop
+                logger.info(
+                    "Stream OK — key ...%s | attempt %d | %d chunks",
+                    ks.key[-8:], attempt + 1, chunks_seen,
+                )
+                return  # success
 
             except Exception as e:
                 last_error = e
                 err_str = str(e).lower()
+                logger.warning(
+                    "Stream error — key ...%s | attempt %d/%d | %s",
+                    ks.key[-8:], attempt + 1, max_retries, e,
+                )
                 with self._mu:
-                    ks.failure_count += 1
-                    if "rate" in err_str or "429" in err_str or "limit" in err_str:
-                        ks.disabled_until = time.time() + 60
-                        logger.warning("Key ...%s rate-limited (stream). Rotating.", ks.key[-6:])
+                    if self._is_rate_limit_error(err_str):
+                        self._disable_key(ks, cooldown=65.0)
                     else:
-                        logger.warning("Key ...%s stream failed: %s. Rotating.", ks.key[-6:], e)
+                        ks.failure_count += 1
 
         raise AllKeysExhaustedError(
-            f"All API keys failed after {max_retries} attempts. Last error: {last_error}"
+            f"All {len(self._pool)} stream key(s) failed after {max_retries} attempts. "
+            f"Last error: {last_error}"
         )
 
-    # ── Diagnostics ──────────────────────────────────────────────────
+    # ── Diagnostics ───────────────────────────────────────────────────
 
     def get_stats(self) -> list[dict]:
-        """Return usage stats for each key (for debugging / health check)."""
+        """Return real-time stats for every key in the pool."""
         with self._mu:
             return [
                 {
-                    "key_suffix": ks.key[-6:],
+                    "index": ks.index,
+                    "key_suffix": f"...{ks.key[-8:]}",
                     "requests": ks.request_count,
                     "failures": ks.failure_count,
                     "active": ks.is_active,
+                    "cooldown_remaining_s": round(ks.cooldown_remaining(), 1),
+                    "tokens_this_minute": ks.tokens_this_minute,
                 }
-                for ks in self._keys
+                for ks in self._pool
             ]
 
+    def status_summary(self) -> str:
+        stats = self.get_stats()
+        active = sum(1 for s in stats if s["active"])
+        parts = []
+        for s in stats:
+            suffix = s["key_suffix"]
+            if s["active"]:
+                status = "OK"
+            else:
+                status = f"cooling {s['cooldown_remaining_s']}s"
+            parts.append(f"{suffix} ({status}) req={s['requests']}")
+        return f"{active}/{len(stats)} keys active | " + " | ".join(parts)
 
-# ── Module-level convenience ─────────────────────────────────────────
+
+# ── Module-level convenience ──────────────────────────────────────────
 
 def get_key_manager() -> KeyManager:
     """Return the singleton KeyManager instance."""

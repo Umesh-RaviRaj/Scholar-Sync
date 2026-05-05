@@ -8,9 +8,8 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
-from groq import Groq
-
 from scholarsync.config.settings import get_settings
+from scholarsync.chat.key_manager import get_key_manager
 from scholarsync.utils.logger import get_logger
 from scholarsync.utils.schemas import (
     ExtractedKnowledge,
@@ -71,6 +70,7 @@ def synthesize_review(
     validation_results: list[ValidationResult],
     paper_metadata: list[PaperMetadata],
     graph_insights: dict | None = None,
+    session_id: str | None = None,
 ) -> LiteratureReview:
     """
     Synthesize a complete literature review from validated extractions.
@@ -93,7 +93,14 @@ def synthesize_review(
     LiteratureReview
     """
     settings = get_settings()
-    client = Groq(api_key=settings.groq_api_key)
+    km = get_key_manager()
+
+    if session_id:
+        try:
+            from scholarsync.chat.mode_router import enqueue_thought
+            enqueue_thought(session_id, f"  ↳ Processing {len(extractions)} extracted knowledge chunks...")
+        except Exception:
+            pass
 
     # ── Build paper reference table ─────────────────────────────────
     paper_map = {p.paper_id: p for p in paper_metadata}
@@ -190,21 +197,18 @@ Use the citation numbers {', '.join(c.citation_id for c in citations)} to refere
 Focus on cross-paper comparisons and thematic organization.
 Output valid JSON only."""
 
-    # ── Call Groq LLM ───────────────────────────────────────────────
+    # ── Call Groq LLM (via KeyManager for rotation/failover) ────────
     logger.info("Synthesizer: generating literature review")
 
-    response = client.chat.completions.create(
-        model=settings.groq_model,
+    raw_text = km.call_llm(
         messages=[
             {"role": "system", "content": SYNTHESIS_SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ],
         temperature=0.3,
-        max_tokens=8192,
+        max_tokens=6000,  # Groq free tier: ~6000 tokens/min; 8192 caused quota errors
         response_format={"type": "json_object"},
     )
-
-    raw_text = response.choices[0].message.content.strip()
 
     # ── Parse response ──────────────────────────────────────────────
     try:

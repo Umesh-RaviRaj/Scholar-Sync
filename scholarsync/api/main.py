@@ -136,6 +136,23 @@ async def health_check():
     )
 
 
+# ── Key Rotation Stats ───────────────────────────────────────────────
+
+@app.get("/key-stats")
+async def key_stats():
+    """
+    Real-time Groq API key pool status.
+    Shows per-key request counts, failures, active/cooling status,
+    and tokens-per-minute usage. Useful for monitoring rotation health.
+    """
+    from scholarsync.chat.key_manager import get_key_manager
+    km = get_key_manager()
+    return {
+        "summary": km.status_summary(),
+        "keys": km.get_stats(),
+    }
+
+
 # ── Upload Papers ───────────────────────────────────────────────────
 
 @app.post("/upload_papers", response_model=UploadResponse)
@@ -300,6 +317,20 @@ async def get_report(session_id: str):
         progress_messages=pipeline_state.get("progress_messages", []),
         errors=pipeline_state.get("errors", []),
     )
+
+
+# ── Graph Visualization ───────────────────────────────────────────────
+
+@app.get("/graph_data")
+async def get_graph_data():
+    """Returns the full knowledge graph in Cytoscape.js JSON format."""
+    from scholarsync.rag.graph_rag import get_full_graph_data_cytoscape
+    try:
+        data = get_full_graph_data_cytoscape()
+        return data
+    except Exception as e:
+        logger.error("Failed to get graph data: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ── Ask — Mode-Aware Chat (no auth required for embedded UI) ────────

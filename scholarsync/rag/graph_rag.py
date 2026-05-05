@@ -221,3 +221,82 @@ def clear_graph():
     with driver.session() as session:
         session.run("MATCH (n) DETACH DELETE n")
         logger.info("Knowledge graph cleared")
+
+def get_full_graph_data_cytoscape() -> dict:
+    """
+    Retrieve up to 500 nodes and export them in Cytoscape JSON format.
+    Catches connection errors gracefully if Neo4j is offline.
+    """
+    try:
+        driver = get_driver()
+        nodes = {}
+        edges = []
+
+        with driver.session() as session:
+            result = session.run(
+                """
+                MATCH (n)
+                OPTIONAL MATCH (n)-[r]->(m)
+                RETURN n, r, m LIMIT 500
+                """
+            )
+            for record in result:
+                n = record["n"]
+                if n is not None:
+                    n_id = str(n.element_id)
+                    if n_id not in nodes:
+                        labels = list(n.labels)
+                        lbl = labels[0] if labels else "Node"
+                        name_field = "title" if lbl == "Paper" else "name"
+                        val = n.get(name_field, "Unknown")
+                        if len(val) > 40: val = val[:37] + "..."
+                        nodes[n_id] = {
+                            "data": {
+                                "id": n_id,
+                                "label": val,
+                                "type": lbl,
+                                "group": lbl,
+                                "full_name": n.get(name_field, ""),
+                                "description": n.get("description", "")
+                            }
+                        }
+
+                m = record["m"]
+                if m is not None:
+                    m_id = str(m.element_id)
+                    if m_id not in nodes:
+                        labels = list(m.labels)
+                        lbl = labels[0] if labels else "Node"
+                        name_field = "title" if lbl == "Paper" else "name"
+                        val = m.get(name_field, "Unknown")
+                        if len(val) > 40: val = val[:37] + "..."
+                        nodes[m_id] = {
+                            "data": {
+                                "id": m_id,
+                                "label": val,
+                                "type": lbl,
+                                "group": lbl,
+                                "full_name": m.get(name_field, ""),
+                                "description": m.get("description", "")
+                            }
+                        }
+
+                r = record["r"]
+                if r is not None and n is not None and m is not None:
+                    edges.append({
+                        "data": {
+                            "id": str(r.element_id),
+                            "source": str(n.element_id),
+                            "target": str(m.element_id),
+                            "label": r.type
+                        }
+                    })
+
+        return {
+            "nodes": list(nodes.values()),
+            "edges": edges
+        }
+    except Exception as e:
+        logger.warning(f"Neo4j offline or unreachable: returning empty graph. Error: {e}")
+        return {"nodes": [], "edges": []}
+

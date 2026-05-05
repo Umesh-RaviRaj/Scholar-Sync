@@ -10,9 +10,8 @@ from __future__ import annotations
 import json
 import uuid
 
-from groq import Groq
-
 from scholarsync.config.settings import get_settings
+from scholarsync.chat.key_manager import get_key_manager
 from scholarsync.utils.logger import get_logger
 from scholarsync.utils.schemas import SubTask, SubTaskType, PaperMetadata
 
@@ -76,7 +75,7 @@ def decompose_query(
         A list of subtasks for worker agents.
     """
     settings = get_settings()
-    client = Groq(api_key=settings.groq_api_key)
+    km = get_key_manager()
 
     paper_context = "\n".join(
         f"- Paper [{m.paper_id}]: \"{m.title}\" by {', '.join(m.authors) or 'Unknown'}"
@@ -93,8 +92,7 @@ all papers for their assigned subtask type. Output a JSON array of subtask objec
 
     logger.info("Manager Agent: decomposing query into subtasks")
 
-    response = client.chat.completions.create(
-        model=settings.groq_model,
+    raw_text = km.call_llm(
         messages=[
             {"role": "system", "content": PLANNING_SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
@@ -103,8 +101,6 @@ all papers for their assigned subtask type. Output a JSON array of subtask objec
         max_tokens=settings.groq_max_tokens,
         response_format={"type": "json_object"},
     )
-
-    raw_text = response.choices[0].message.content.strip()
 
     # Parse the JSON response
     try:

@@ -10,6 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
     rel="stylesheet" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.26.0/cytoscape.min.js"></script>
   <style>
     *,
     *::before,
@@ -743,6 +744,56 @@
       font-weight: 500;
     }
 
+    /* ─── Graph Modal ─── */
+    .graph-modal {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; width: 100vw; height: 100vh;
+      background: rgba(15, 15, 26, 0.85); /* backdrop */
+      z-index: 1000;
+      backdrop-filter: blur(4px);
+      align-items: center;
+      justify-content: center;
+    }
+    .graph-modal.visible {
+      display: flex;
+    }
+    .graph-modal-content {
+      width: 90vw;
+      height: 90vh;
+      background: var(--card-bg);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-lg);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    .graph-modal-header {
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: var(--main-bg);
+      color: var(--text-primary);
+    }
+    .graph-modal-header .close-btn {
+      background: transparent;
+      border: none;
+      font-size: 24px;
+      cursor: pointer;
+      color: var(--text-secondary);
+    }
+    .graph-modal-header .close-btn:hover {
+      color: var(--danger);
+    }
+    .cy-container {
+      flex: 1;
+      width: 100%;
+      background: #fafafc;
+    }
+
     /* ─── Report card ─── */
     .report-card {
       margin-top: 12px;
@@ -1301,6 +1352,12 @@
           </div>
         </div>
         <div class="chat-header-actions">
+          <button class="header-icon-btn" title="View Knowledge Graph" onclick="openGraphModal()" style="display:flex; align-items:center; gap:4px; font-size:12px; font-weight:600; padding:4px 10px; border-radius:6px; background:var(--accent-glow); color:var(--accent); border:none;">
+            <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+            </svg>
+            Graph
+          </button>
           <button class="header-icon-btn" title="Clear chat" onclick="clearCurrentChat()">
             <svg fill="none" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -1401,6 +1458,22 @@
         </p>
       </div>
     </main>
+  </div>
+
+  <!-- Graph Modal Overlay -->
+  <div id="graph-modal" class="graph-modal">
+    <div class="graph-modal-content">
+      <div class="graph-modal-header">
+        <h3 style="display:flex; align-items:center; gap:8px;">
+          <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+          </svg>
+          Knowledge Graph
+        </h3>
+        <button class="close-btn" onclick="closeGraphModal()">&times;</button>
+      </div>
+      <div id="cy" class="cy-container"></div>
+    </div>
   </div>
 
   <script>
@@ -1893,6 +1966,7 @@
           if (bubble) bubble.classList.add('streaming-cursor');
 
           let fullText = '';
+          let thoughtsHTML = '';
 
           // SSE streaming via fetch
           const resp = await fetch(`${API_BASE}/ask/stream`, {
@@ -1923,16 +1997,43 @@
               if (line.startsWith('event: ')) { eventType = line.slice(7).trim(); continue; }
               if (line.startsWith('data: ')) {
                 const data = JSON.parse(line.slice(6));
+                
+                const renderWithThoughts = (text) => {
+                  let html = '';
+                  if (thoughtsHTML) {
+                    html += `<div class="agent-thoughts-container" style="background:#1a1a2e; color:#c8c8e0; font-family:monospace; font-size:11px; padding:12px; border-radius:6px; margin-bottom:12px; max-height:200px; overflow-y:auto; line-height:1.5; border:1px solid #333;">${thoughtsHTML}</div>`;
+                  }
+                  if (text) {
+                    if (isDeep) html += renderMarkdown(text);
+                    else html += renderMarkdownLite(text);
+                  }
+                  return html;
+                };
+
                 if (eventType === 'token' && data) {
                   fullText += data;
                   if (bubble) {
-                    if (isDeep) { bubble.innerHTML = renderMarkdown(fullText); }
-                    else { bubble.innerHTML = renderMarkdownLite(fullText); }
+                    bubble.innerHTML = renderWithThoughts(fullText);
                     bubble.classList.add('streaming-cursor');
+                    const tc = bubble.querySelector('.agent-thoughts-container');
+                    if (tc) tc.scrollTop = tc.scrollHeight;
+                  }
+                  scrollToBottom();
+                } else if (eventType === 'agent_thought' && data) {
+                  let color = '#c8c8e0';
+                  if (data.includes('❌') || data.includes('ERROR:')) color = '#e17055';
+                  else if (data.includes('✅')) color = '#00b894';
+                  thoughtsHTML += `<div style="color:${color};margin-bottom:2px;">${escapeHtml(data)}</div>`;
+                  
+                  if (bubble) {
+                    bubble.innerHTML = renderWithThoughts(fullText);
+                    bubble.classList.add('streaming-cursor');
+                    const tc = bubble.querySelector('.agent-thoughts-container');
+                    if (tc) tc.scrollTop = tc.scrollHeight;
                   }
                   scrollToBottom();
                 } else if (eventType === 'progress' && data) {
-                  if (bubble) {
+                  if (bubble && !thoughtsHTML) { // only show progress if no thoughts
                     bubble.innerHTML = `<div style="font-size:12px;color:var(--accent);font-weight:500">${data}</div>`;
                     bubble.classList.add('streaming-cursor');
                   }
@@ -2063,6 +2164,104 @@
       container.appendChild(row); scrollToBottom();
     }
     function removeTypingIndicator() { const i = document.getElementById('typing-indicator'); if (i) i.remove(); }
+
+    /* ================================================================
+       KNOWLEDGE GRAPH VISUALIZATION
+    ================================================================ */
+    let cyInstance = null;
+
+    async function openGraphModal() {
+      const modal = document.getElementById('graph-modal');
+      modal.classList.add('visible');
+      if (!cyInstance) {
+        await loadGraphData();
+      }
+    }
+
+    function closeGraphModal() {
+      document.getElementById('graph-modal').classList.remove('visible');
+    }
+
+    async function loadGraphData() {
+      const container = document.getElementById('cy');
+      container.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-secondary)">Loading graph data from Neo4j...</div>';
+      try {
+        const resp = await fetch(API_BASE + '/graph_data');
+        if (!resp.ok) throw new Error('Failed to fetch graph data');
+        const data = await resp.json();
+        
+        if (!data.nodes || data.nodes.length === 0) {
+            container.innerHTML = '<div style="padding:40px;text-align:center;color:#e17055;"><strong>⚠️ Neo4j Knowledge Graph Offline or Empty</strong><p style="margin-top:10px;color:var(--text-secondary);">Could not connect to Neo4j on localhost:7687 or no entities extracted yet. Ensure Neo4j Desktop is running.</p></div>';
+            return;
+        }
+
+        container.innerHTML = ''; // clear loading
+
+        cyInstance = cytoscape({
+          container: container,
+          elements: {
+            nodes: data.nodes,
+            edges: data.edges
+          },
+          style: [
+            {
+              selector: 'node',
+              style: {
+                'label': 'data(label)',
+                'background-color': '#a388ee',
+                'color': '#1a1a2e',
+                'text-valign': 'center',
+                'text-halign': 'center',
+                'font-size': '10px',
+                'width': 'label',
+                'height': 'label',
+                'padding': '10px',
+                'shape': 'round-rectangle',
+                'text-wrap': 'wrap',
+                'text-max-width': '80px',
+                'border-width': 2,
+                'border-color': '#6c5ce7'
+              }
+            },
+            {
+              selector: 'node[type="Paper"]',
+              style: {
+                'background-color': '#fdcb6e',
+                'border-color': '#e17055',
+                'shape': 'ellipse',
+                'width': '30px',
+                'height': '30px',
+                'padding': '15px'
+              }
+            },
+            {
+              selector: 'edge',
+              style: {
+                'width': 2,
+                'line-color': '#c8c8e0',
+                'target-arrow-color': '#c8c8e0',
+                'target-arrow-shape': 'triangle',
+                'curve-style': 'bezier',
+                'label': 'data(label)',
+                'font-size': '8px',
+                'color': '#636e80',
+                'text-rotation': 'autorotate'
+              }
+            }
+          ],
+          layout: {
+            name: 'cose',
+            animate: true,
+            idealEdgeLength: 100,
+            nodeOverlap: 20
+          }
+        });
+
+      } catch (e) {
+        container.innerHTML = `<div style="padding:20px;text-align:center;color:var(--danger)">Error: ${e.message}</div>`;
+      }
+    }
+
 
     /* ================================================================
        INPUT HELPERS

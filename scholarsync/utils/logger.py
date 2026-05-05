@@ -13,7 +13,21 @@ def get_logger(name: str, level: int = logging.INFO) -> logging.Logger:
     if not logger.handlers:
         logger.setLevel(level)
 
-        handler = logging.StreamHandler(sys.stdout)
+        # On Windows, sys.stdout may use cp1252 which cannot encode Unicode
+        # characters (emojis, box-drawing, arrows, etc.) used in log messages.
+        # Wrap stdout in a UTF-8 stream with 'replace' error handling so
+        # logging never crashes due to encoding issues.
+        import io
+        import os
+
+        if os.name == "nt":
+            stream = io.TextIOWrapper(
+                sys.stdout.buffer, encoding="utf-8", errors="replace"
+            )
+        else:
+            stream = sys.stdout
+
+        handler = logging.StreamHandler(stream)
         handler.setLevel(level)
 
         formatter = logging.Formatter(

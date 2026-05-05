@@ -241,83 +241,154 @@ Question: {message}
     )
 
 
-def _stream_deep_research(
+import queue
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+
+# Queues to pass live internal agent thoughts to the SSE stream
+THOUGHT_QUEUES: dict[str, queue.Queue] = {}
+
+def enqueue_thought(session_id: str, message: str):
+    q = THOUGHT_QUEUES.get(session_id)
+    if q is not None:
+        q.put(message)
+
+async def _stream_deep_research(
     chat_id: str,
     message: str,
     history: list[dict],
 ):
     """
-    Generator for deep research streaming.
-    Yields progress events first, then the synthesis stream.
+    Deep research streaming endpoint.
+
+    First tries the full LangGraph multi-agent pipeline (if papers are in
+    the in-memory session store). Falls back to the LLM-based deep research
+    approach that queries ChromaDB directly (works even after server restart
+    since ChromaDB is persisted on disk).
     """
-    settings = get_settings()
-    km = get_key_manager()
+    from scholarsync.utils.schemas import PipelineStatus
 
-    # Step 1: Decompose (non-streamed, fast)
-    yield {"event": "progress", "data": "🔍 Decomposing research question..."}
-
-    history_text = _format_history(history, max_messages=3)
-    result = km.call_llm(
-        messages=[
-            {"role": "system", "content": DEEP_DECOMPOSE_PROMPT},
-            {"role": "user", "content": f"Conversation context:\n{history_text}\n\nResearch question: {message}\n\nDecompose into 4 focused sub-questions. Output JSON only."},
-        ],
-        max_tokens=512,
-        response_format={"type": "json_object"},
-    )
-
+    # Try to get paper metadata from the in-memory session store
+    session = None
     try:
-        parsed = json.loads(result)
-        sub_questions = parsed.get("sub_questions", [])[:4]
-        if not sub_questions:
-            raise ValueError("empty")
+        from scholarsync.api.main import sessions
+        session = sessions.get(chat_id)
     except Exception:
-        sub_questions = [
-            f"What are the key concepts related to: {message}",
-            f"What methodologies are used for: {message}",
-            f"What are the main findings regarding: {message}",
-            f"What are the limitations of: {message}",
-        ]
+        pass
 
-    # Step 2: Retrieve context per sub-question
-    all_contexts = []
-    for i, sq in enumerate(sub_questions, 1):
-        yield {"event": "progress", "data": f"📚 Researching sub-question {i}/{len(sub_questions)}: {sq[:60]}..."}
-        ctx = get_context(query=sq, depth=settings.deep_research_graph_depth, top_k=settings.deep_research_top_k)
-        if len(ctx) > 1500:
-            ctx = ctx[:1500] + "..."
-        all_contexts.append(f"Sub-question {i}: {sq}\n\n{ctx}")
+    has_papers_in_session = session and session.get("paper_metadata")
 
-    aggregated = "\n\n---\n\n".join(all_contexts)
-    if len(aggregated) > 6000:
-        aggregated = aggregated[:6000] + "\n\n[truncated]"
+    if has_papers_in_session:
+        # Full LangGraph multi-agent pipeline path
+        from scholarsync.workflow.langgraph_pipeline import build_pipeline
 
-    yield {"event": "progress", "data": "✨ Synthesizing comprehensive analysis..."}
+        yield {"event": "agent_thought", "data": "🚀 Full multi-agent pipeline starting..."}
 
-    # Step 3: Stream synthesis
-    synthesis_prompt = f"""Original research question: {message}
+        q = queue.Queue()
+        THOUGHT_QUEUES[chat_id] = q
 
-Conversation context:
-{history_text}
+        initial_state = {
+            "session_id": chat_id,
+            "query": message,
+            "paper_metadata": [p.model_dump() for p in session["paper_metadata"]],
+            "status": PipelineStatus.PENDING.value,
+            "progress_messages": ["🚀 Multi-Agent Pipeline initialized..."],
+            "subtasks": [],
+            "extractions": [],
+            "validation_results": [],
+            "correction_count": 0,
+            "graph_insights": {},
+            "final_report": None,
+            "report_markdown": "",
+            "errors": [],
+        }
 
-Research context from {len(sub_questions)} sub-queries:
+        app = build_pipeline().compile()
 
-{aggregated}
+        loop = asyncio.get_running_loop()
 
-Produce a comprehensive deep research analysis following the MANDATORY FORMAT."""
+        def run_graph():
+            try:
+                return app.invoke(initial_state)
+            except Exception as e:
+                logger.error("Langgraph error: %s", e)
+                q.put(f"ERROR: {e}")
+                return None
+            finally:
+                q.put("DONE")
 
-    stream = km.call_llm_stream(
-        messages=[
-            {"role": "system", "content": DEEP_SYNTHESIS_PROMPT},
-            {"role": "user", "content": synthesis_prompt},
-        ],
-        max_tokens=4096,
-    )
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = loop.run_in_executor(executor, run_graph)
 
-    for chunk in stream:
-        yield {"event": "token", "data": chunk}
+        # Continuously read from the queue and yield to SSE as agent thoughts
+        while True:
+            try:
+                msg = q.get_nowait()
+                if msg == "DONE":
+                    break
+                if msg.startswith("ERROR:"):
+                    yield {"event": "error", "data": msg}
+                    break
+                yield {"event": "agent_thought", "data": msg}
+            except queue.Empty:
+                if future.done():
+                    break
+                await asyncio.sleep(0.1)
 
-    yield {"event": "done", "data": ""}
+        THOUGHT_QUEUES.pop(chat_id, None)
+
+        final_state = await future
+        if not final_state:
+            yield {"event": "error", "data": "Pipeline failed to execute."}
+            return
+
+        report_md = final_state.get("report_markdown", "")
+        if report_md:
+            yield {"event": "progress", "data": "✅ Report generated successfully."}
+            chunk_size = 30
+            for i in range(0, len(report_md), chunk_size):
+                yield {"event": "token", "data": report_md[i:i+chunk_size]}
+                await asyncio.sleep(0.01)
+        else:
+            errs = final_state.get("errors", [])
+            yield {"event": "error", "data": "Pipeline failed: " + ", ".join(errs)}
+
+        yield {"event": "done", "data": ""}
+
+    else:
+        # Fallback: LLM-based deep research using ChromaDB context directly.
+        # This works even after server restart since ChromaDB is persisted.
+        yield {"event": "agent_thought", "data": "🔬 Deep research mode — analyzing papers via vector search..."}
+
+        loop = asyncio.get_running_loop()
+
+        try:
+            # Run the synchronous deep research in a thread
+            events = await loop.run_in_executor(
+                None,
+                lambda: list(_handle_deep_research_sync(chat_id, message, history)),
+            )
+
+            yield {"event": "agent_thought", "data": "✅ Analysis complete — generating comprehensive report..."}
+
+            for event in events:
+                if event.get("event") == "token":
+                    text = event["data"]
+                    # Stream tokens in small chunks for smooth UI rendering
+                    chunk_size = 30
+                    for i in range(0, len(text), chunk_size):
+                        yield {"event": "token", "data": text[i:i+chunk_size]}
+                        await asyncio.sleep(0.01)
+                else:
+                    yield event
+
+        except Exception as e:
+            logger.error("Deep research fallback error: %s", e)
+            yield {"event": "error", "data": f"Deep research failed: {str(e)}"}
+
+        yield {"event": "done", "data": ""}
+
+
 
 
 # ── Shared Helpers ───────────────────────────────────────────────────
@@ -449,7 +520,7 @@ async def route_message_stream(
 
     if deep_research:
         gen = _stream_deep_research(chat_id, message, history)
-        for event in gen:
+        async for event in gen:
             yield event
         return
 
