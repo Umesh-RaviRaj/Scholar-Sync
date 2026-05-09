@@ -32,6 +32,17 @@ class Settings(BaseSettings):
     groq_temperature: float = 0.1
     groq_max_tokens: int = 4096  # Safe default; synthesizer uses its own limit
 
+    # ── Per-agent token limits (right-sized to avoid waste) ──────
+    manager_max_tokens: int = 1024     # Only needs a short JSON task list
+    worker_max_tokens: int = 3072      # Structured extraction output
+    checker_max_tokens: int = 1536     # Validation JSON is compact
+    synthesizer_max_tokens: int = 6000 # Full literature review
+    worker_chunk_count: int = 8        # Chunks retrieved per worker call
+
+    # ── Pipeline budget ──────────────────────────────────────────
+    max_pipeline_tokens: int = 120000  # Hard ceiling per pipeline run
+    llm_cache_ttl_seconds: int = 3600  # 1 hour cache for LLM responses
+
     # ── Mode Defaults ────────────────────────────────────────────────
     normal_mode_top_k: int = 5
     normal_mode_graph_depth: int = 1
@@ -59,7 +70,7 @@ class Settings(BaseSettings):
 
     # ── Validation ──────────────────────────────────────────────────
     validation_threshold: float = 0.7
-    max_correction_loops: int = 3
+    max_correction_loops: int = 1  # Feedback-augmented correction is higher quality; 1 loop suffices
 
     # ── API ──────────────────────────────────────────────────────────
     api_host: str = "0.0.0.0"

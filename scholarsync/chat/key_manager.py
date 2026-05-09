@@ -202,6 +202,7 @@ class KeyManager:
         max_tokens: int | None = None,
         response_format: dict | None = None,
         max_retries: int = 6,
+        session_id: str | None = None,
     ) -> str:
         """
         Call Groq with true round-robin rotation.
@@ -212,15 +213,38 @@ class KeyManager:
         tried on the very next attempt — no wasted wait inside the loop.
         Only when ALL keys are disabled does it block until one recovers.
         """
+        import time as _time
+        from scholarsync.chat.llm_cache import get_llm_cache, get_pipeline_budget
+
         settings = get_settings()
         _model = model or settings.groq_model
         _temp  = temperature if temperature is not None else settings.groq_temperature
         _toks  = max_tokens or settings.groq_max_tokens
 
+        # ── Budget check ──────────────────────────────────────────
+        budget = None
+        if session_id:
+            budget = get_pipeline_budget(session_id)
+            if budget.exhausted:
+                logger.warning(
+                    "Pipeline budget exhausted (%s) — skipping LLM call",
+                    budget.summary(),
+                )
+                raise AllKeysExhaustedError(
+                    f"Pipeline token budget exhausted: {budget.summary()}"
+                )
+
+        # ── Cache check ──────────────────────────────────────────
+        cache = get_llm_cache()
+        cached = cache.get(messages, _model, _toks)
+        if cached is not None:
+            return cached
+
+        start_time = _time.time()
         last_error: Exception | None = None
 
         for attempt in range(max_retries):
-            # ── Claim a key ──────────────────────────────────────────
+            # ── Claim a key ──────────────────────────────────────
             with self._mu:
                 ks = self._claim_next_active()
 
@@ -233,7 +257,7 @@ class KeyManager:
                 if ks is None:
                     break   # Timed out — fall through to raise
 
-            # ── Fire the request ─────────────────────────────────────
+            # ── Fire the request ─────────────────────────────────
             try:
                 kwargs: dict[str, Any] = {
                     "model": _model,
@@ -249,17 +273,27 @@ class KeyManager:
 
                 # Track usage
                 usage = getattr(response, "usage", None)
-                tokens_used = getattr(usage, "completion_tokens", _toks) if usage else _toks
+                tokens_used = getattr(usage, "total_tokens", _toks) if usage else _toks
+                elapsed = _time.time() - start_time
                 with self._mu:
                     ks.request_count += 1
-                    ks.last_used = time.time()
+                    ks.last_used = _time.time()
                     ks.failure_count = 0
                     ks.record_tokens(tokens_used)
 
+                # Record in pipeline budget
+                if budget:
+                    budget.record(tokens_used)
+
                 logger.info(
-                    "LLM OK — key ...%s | attempt %d | ~%d tokens",
-                    ks.key[-8:], attempt + 1, tokens_used,
+                    "LLM OK — key ...%s | attempt %d | %d tok | %.1fs | budget: %s",
+                    ks.key[-8:], attempt + 1, tokens_used, elapsed,
+                    budget.summary() if budget else "n/a",
                 )
+
+                # Store in cache
+                cache.put(messages, _model, _toks, text, tokens_used)
+
                 return text
 
             except Exception as e:

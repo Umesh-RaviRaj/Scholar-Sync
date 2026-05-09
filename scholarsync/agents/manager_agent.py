@@ -58,6 +58,7 @@ Always include at minimum: entities, methodology, findings, and risks.
 def decompose_query(
     query: str,
     paper_metadata: list[PaperMetadata],
+    session_id: str | None = None,
 ) -> list[SubTask]:
     """
     Use the Manager Agent to decompose a research query into subtasks.
@@ -68,6 +69,8 @@ def decompose_query(
         The user's research query.
     paper_metadata : list[PaperMetadata]
         Metadata for all uploaded papers.
+    session_id : str, optional
+        Pipeline session ID for token budget tracking.
 
     Returns
     -------
@@ -98,8 +101,9 @@ all papers for their assigned subtask type. Output a JSON array of subtask objec
             {"role": "user", "content": user_prompt},
         ],
         temperature=settings.groq_temperature,
-        max_tokens=settings.groq_max_tokens,
+        max_tokens=settings.manager_max_tokens,
         response_format={"type": "json_object"},
+        session_id=session_id,
     )
 
     # Parse the JSON response

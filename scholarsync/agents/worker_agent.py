@@ -3,7 +3,8 @@ Worker Agent — reads assigned document chunks via RAG retrieval and
 extracts structured knowledge (entities, methodology, findings, risks,
 claims) using Groq LLM with Pydantic-structured output.
 
-Supports parallel execution across multiple subtasks.
+OPTIMISED: batches ALL subtasks for a single paper into ONE LLM call
+instead of one call per (subtask × paper), reducing API calls by ~80%.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ logger = get_logger(__name__)
 
 EXTRACTION_SYSTEM_PROMPT = """You are a Worker Agent in ScholarSync, a multi-agent literature review system.
 
-Your job is to extract structured knowledge from research paper text based on a specific subtask.
+Your job is to extract structured knowledge from research paper text based on MULTIPLE subtasks simultaneously.
 
 You MUST output valid JSON matching this schema:
 {
@@ -50,37 +51,46 @@ Rules:
 1. Only extract information actually present in the provided text.
 2. Include direct quotes from the text to support extractions.
 3. Be precise and concise — avoid vague generalizations.
-4. Focus on the subtask type requested — prioritize that extraction category.
+4. Cover ALL requested extraction categories thoroughly.
 5. Always provide entity relationships when entities are mentioned together.
 6. Do NOT hallucinate — only extract what is explicitly stated.
 """
 
 
-def extract_from_paper(
-    subtask: SubTask,
+def _extract_all_for_paper(
+    subtasks: list[SubTask],
     paper_id: str,
     paper_title: str,
+    session_id: str | None = None,
 ) -> ExtractedKnowledge:
     """
-    Execute a single extraction subtask for one paper.
+    Execute ALL subtasks for a single paper in ONE LLM call.
 
-    Uses RAG to retrieve relevant chunks, then LLM to extract structured knowledge.
+    Retrieves chunks once, builds a combined prompt covering all subtask
+    types, and parses the unified response.
     """
     settings = get_settings()
     km = get_key_manager()
+    chunk_count = settings.worker_chunk_count
 
-    # ── Retrieve relevant chunks via vector search ──────────────────
-    search_query = f"{subtask.prompt} {subtask.description}"
+    # ── Build a combined search query from all subtasks ──────────────
+    combined_query = " ".join(
+        f"{st.prompt} {st.description}" for st in subtasks
+    )
+    # Truncate to avoid overly long embedding input
+    if len(combined_query) > 500:
+        combined_query = combined_query[:500]
+
     chunks = vector_search(
-        query=search_query,
-        n_results=15,
+        query=combined_query,
+        n_results=chunk_count,
         paper_id=paper_id,
     )
 
     if not chunks:
-        logger.warning("No chunks found for paper %s, subtask %s", paper_id, subtask.task_type)
+        logger.warning("No chunks found for paper %s", paper_id)
         return ExtractedKnowledge(
-            subtask_type=subtask.task_type,
+            subtask_type=SubTaskType.ENTITIES,
             paper_id=paper_id,
             paper_title=paper_title,
         )
@@ -97,21 +107,29 @@ def extract_from_paper(
 
     context = "\n\n---\n\n".join(context_parts)
 
+    # ── Build combined subtask instructions ─────────────────────────
+    task_instructions = "\n".join(
+        f"  {i}. [{st.task_type.value.upper()}] {st.description}: {st.prompt}"
+        for i, st in enumerate(subtasks, 1)
+    )
+
     user_prompt = f"""Paper: "{paper_title}" (ID: {paper_id})
 
-Subtask: {subtask.task_type.value} — {subtask.description}
-
-Specific Instructions: {subtask.prompt}
+Extraction Tasks (complete ALL of these):
+{task_instructions}
 
 --- Retrieved Text Chunks ---
 {context}
 --- End of Chunks ---
 
-Extract structured knowledge from the above text chunks. Focus on {subtask.task_type.value}.
+Extract structured knowledge covering ALL the above tasks from the text chunks.
 Output valid JSON only."""
 
     # ── Call Groq LLM (via KeyManager for rotation/failover) ────────
-    logger.info("Worker: extracting %s from '%s'", subtask.task_type.value, paper_title)
+    logger.info(
+        "Worker: extracting %d tasks from '%s'",
+        len(subtasks), paper_title,
+    )
 
     raw_text = km.call_llm(
         messages=[
@@ -119,8 +137,9 @@ Output valid JSON only."""
             {"role": "user", "content": user_prompt},
         ],
         temperature=settings.groq_temperature,
-        max_tokens=settings.groq_max_tokens,
+        max_tokens=settings.worker_max_tokens,
         response_format={"type": "json_object"},
+        session_id=session_id,
     )
 
     # ── Parse response into Pydantic model ──────────────────────────
@@ -155,7 +174,7 @@ Output valid JSON only."""
     ]
 
     return ExtractedKnowledge(
-        subtask_type=subtask.task_type,
+        subtask_type=SubTaskType.ENTITIES,  # Combined extraction
         paper_id=paper_id,
         paper_title=paper_title,
         entities=entities,
@@ -176,47 +195,51 @@ def run_worker_agents(
     session_id: str | None = None,
 ) -> list[ExtractedKnowledge]:
     """
-    Execute all worker agents in parallel.
+    Execute worker agents — ONE batched call per paper (not per subtask).
 
-    Each (subtask, paper) combination is processed independently.
+    Each paper gets a single LLM call covering all subtask types.
     """
     logger.info(
-        "Running %d subtasks × %d papers = %d worker jobs",
+        "Running batched extraction: %d subtasks for %d papers = %d LLM calls",
         len(subtasks),
         len(paper_metadata),
-        len(subtasks) * len(paper_metadata),
+        len(paper_metadata),  # One call per paper now!
     )
 
-    paper_map = {p.paper_id: p for p in paper_metadata}
     all_extractions: list[ExtractedKnowledge] = []
 
-    # Build job list: each subtask × each paper
-    jobs = []
-    for subtask in subtasks:
-        for paper_id in subtask.assigned_paper_ids:
-            paper = paper_map.get(paper_id)
-            if paper:
-                jobs.append((subtask, paper_id, paper.title))
+    # Build job list: one per paper (batching all subtasks)
+    jobs = [
+        (subtasks, p.paper_id, p.title)
+        for p in paper_metadata
+    ]
 
     # Execute in parallel with thread pool
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_job = {
-            executor.submit(extract_from_paper, st, pid, ptitle): (st, pid)
-            for st, pid, ptitle in jobs
+            executor.submit(
+                _extract_all_for_paper, sts, pid, ptitle, session_id
+            ): (pid, ptitle)
+            for sts, pid, ptitle in jobs
         }
 
         for future in as_completed(future_to_job):
-            subtask, paper_id = future_to_job[future]
+            paper_id, paper_title = future_to_job[future]
             try:
                 extraction = future.result()
                 all_extractions.append(extraction)
-                msg = f"  ↳ Worker completed: {subtask.task_type.value} for paper '{paper_map[paper_id].title[:20]}...' ({len(extraction.entities)} entities, {len(extraction.findings)} findings)"
+                msg = (
+                    f"  \u21b3 Worker completed: '{paper_title[:30]}...' "
+                    f"({len(extraction.entities)} entities, "
+                    f"{len(extraction.findings)} findings, "
+                    f"{len(extraction.relationships)} relationships)"
+                )
                 logger.info(
-                    "Worker completed: %s for paper %s (%d entities, %d findings)",
-                    subtask.task_type.value,
+                    "Worker completed: paper %s (%d entities, %d findings, %d rels)",
                     paper_id,
                     len(extraction.entities),
                     len(extraction.findings),
+                    len(extraction.relationships),
                 )
                 if session_id:
                     try:
@@ -226,8 +249,7 @@ def run_worker_agents(
                         pass
             except Exception as e:
                 logger.error(
-                    "Worker failed: %s for paper %s: %s",
-                    subtask.task_type.value,
+                    "Worker failed: paper %s: %s",
                     paper_id,
                     e,
                 )

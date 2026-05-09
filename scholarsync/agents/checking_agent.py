@@ -2,6 +2,8 @@
 Checking Agent (Auditor) — validates worker outputs by comparing claims
 against source context. Detects hallucinations, verifies grounding,
 and issues correction prompts when confidence is below threshold.
+
+OPTIMISED: consolidated vector searches and right-sized token limits.
 """
 
 from __future__ import annotations
@@ -64,12 +66,12 @@ Be strict but fair. The goal is factual accuracy, not creative interpretation.
 
 def validate_extraction(
     extraction: ExtractedKnowledge,
+    session_id: str | None = None,
 ) -> ValidationResult:
     """
     Validate a single worker's extraction against source documents.
 
-    Uses RAG to retrieve the original source chunks and LLM to compare
-    the extracted claims against the source material.
+    Uses a SINGLE consolidated vector search instead of per-claim searches.
     """
     settings = get_settings()
     km = get_key_manager()
@@ -88,13 +90,17 @@ def validate_extraction(
             feedback="No claims to validate — extraction was empty.",
         )
 
-    # ── Retrieve source context for validation ──────────────────────
-    context_chunks = []
-    for claim in all_claims[:5]:  # Limit to avoid context overflow
-        chunks = vector_search(query=claim, n_results=3, paper_id=extraction.paper_id)
-        for c in chunks:
-            if c["text"] not in [cc["text"] for cc in context_chunks]:
-                context_chunks.append(c)
+    # ── Single consolidated vector search ───────────────────────────
+    # Combine top claims into one search query instead of N separate searches
+    combined_query = " ".join(all_claims[:8])
+    if len(combined_query) > 500:
+        combined_query = combined_query[:500]
+
+    context_chunks = vector_search(
+        query=combined_query,
+        n_results=8,
+        paper_id=extraction.paper_id,
+    )
 
     if not context_chunks:
         return ValidationResult(
@@ -105,17 +111,17 @@ def validate_extraction(
         )
 
     source_context = "\n\n---\n\n".join(
-        f"[Source Chunk {c['id']}]:\n{c['text']}" for c in context_chunks[:10]
+        f"[Source Chunk {c['id']}]:\n{c['text']}" for c in context_chunks
     )
 
     # ── Build validation prompt ─────────────────────────────────────
-    claims_text = "\n".join(f"  {i+1}. {claim}" for i, claim in enumerate(all_claims))
+    claims_text = "\n".join(f"  {i+1}. {claim}" for i, claim in enumerate(all_claims[:15]))
 
     entities_text = ""
     if extraction.entities:
         entities_text = "\n\nExtracted Entities:\n" + "\n".join(
             f"  - {e.name} ({e.entity_type}): {e.description}"
-            for e in extraction.entities[:15]
+            for e in extraction.entities[:10]
         )
 
     user_prompt = f"""Validate the following extractions from paper "{extraction.paper_title}" (ID: {extraction.paper_id}):
@@ -145,8 +151,9 @@ Validate each claim against the source text. Output valid JSON only."""
             {"role": "user", "content": user_prompt},
         ],
         temperature=0.0,  # Deterministic for validation
-        max_tokens=settings.groq_max_tokens,
+        max_tokens=settings.checker_max_tokens,
         response_format={"type": "json_object"},
+        session_id=session_id,
     )
 
     # ── Parse response ──────────────────────────────────────────────
@@ -199,17 +206,17 @@ def validate_all_extractions(
     session_id: str | None = None,
 ) -> list[ValidationResult]:
     """
-    Validate all worker extractions in parallel.
+    Validate all worker extractions (sequentially to be kind to rate limits).
     """
     import concurrent.futures
 
-    logger.info("Checking Agent: validating %d extractions in parallel", len(extractions))
+    logger.info("Checking Agent: validating %d extractions", len(extractions))
     results = []
 
     def _validate(extraction):
         try:
-            result = validate_extraction(extraction)
-            msg = f"  ↳ Checked extraction {extraction.subtask_type.value} for paper '{extraction.paper_title[:20]}...': Score {result.overall_score:.2f} ({'Valid' if result.is_valid else 'Needs Revision'})"
+            result = validate_extraction(extraction, session_id=session_id)
+            msg = f"  \u21b3 Checked '{extraction.paper_title[:25]}...': Score {result.overall_score:.2f} ({'Valid' if result.is_valid else 'Needs Revision'})"
             if session_id:
                 try:
                     from scholarsync.chat.mode_router import enqueue_thought
@@ -230,11 +237,11 @@ def validate_all_extractions(
                 feedback=f"Validation error: {str(e)}",
             )
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        future_to_ext = {executor.submit(_validate, ext): ext for ext in extractions}
-        for future in concurrent.futures.as_completed(future_to_ext):
-            res = future.result()
-            results.append(res)
+    # Sequential execution — avoids parallel rate-limit contention
+    # with only 2 API keys. Each call is already fast with reduced tokens.
+    for ext in extractions:
+        res = _validate(ext)
+        results.append(res)
 
     avg_score = sum(r.overall_score for r in results) / len(results) if results else 0.0
     valid_count = sum(1 for r in results if r.is_valid)

@@ -3,8 +3,14 @@ LangGraph Workflow Pipeline — orchestrates the full ScholarSync multi-agent
 literature review process as a state graph.
 
 Pipeline:
-  UserInput → ManagerAgent → WorkerAgents (parallel) → GraphRAG
-  → CheckingAgent → (correction loop if fail) → FinalSynthesizer → Output
+  UserInput → ManagerAgent → WorkerAgents (batched per paper) → GraphRAG
+  → CheckingAgent → (feedback-augmented correction if fail) → FinalSynthesizer → Output
+
+OPTIMISED:
+  - Workers batch all subtasks per paper (N calls instead of 5×N)
+  - Correction loop injects checker feedback and only re-runs failed extractions
+  - Session-level token budget tracking
+  - Right-sized token limits per agent
 """
 
 from __future__ import annotations
@@ -88,7 +94,9 @@ def manager_node(state: GraphState) -> GraphState:
 
     try:
         paper_metadata = [PaperMetadata(**p) for p in state["paper_metadata"]]
-        subtasks = decompose_query(state["query"], paper_metadata)
+        subtasks = decompose_query(
+            state["query"], paper_metadata, session_id=state["session_id"]
+        )
         state["subtasks"] = [st.model_dump() for st in subtasks]
         
         success_msg = f"✅ Manager Agent: Created {len(subtasks)} subtasks"
@@ -116,8 +124,8 @@ def manager_node(state: GraphState) -> GraphState:
 
 
 def worker_node(state: GraphState) -> GraphState:
-    """Worker Agents: extract structured knowledge in parallel."""
-    logger.info("Pipeline: Worker Agents starting")
+    """Worker Agents: extract structured knowledge — batched per paper."""
+    logger.info("Pipeline: Worker Agents starting (batched per paper)")
     state["status"] = PipelineStatus.EXTRACTING.value
     msg = "⛏️ Worker Agents: Extracting knowledge from papers..."
     state["progress_messages"].append(msg)
@@ -130,18 +138,24 @@ def worker_node(state: GraphState) -> GraphState:
     try:
         subtasks = [SubTask(**st) for st in state["subtasks"]]
         paper_metadata = [PaperMetadata(**p) for p in state["paper_metadata"]]
-        from scholarsync.chat.mode_router import enqueue_thought
         try:
-            enqueue_thought(state["session_id"], f"  ↳ Running {len(subtasks)*len(paper_metadata)} extraction jobs in parallel...")
+            from scholarsync.chat.mode_router import enqueue_thought
+            enqueue_thought(
+                state["session_id"],
+                f"  ↳ Batched extraction: {len(subtasks)} tasks × {len(paper_metadata)} papers = {len(paper_metadata)} LLM calls",
+            )
         except Exception:
             pass
             
-        extractions = run_worker_agents(subtasks, paper_metadata, session_id=state["session_id"])
+        extractions = run_worker_agents(
+            subtasks, paper_metadata, session_id=state["session_id"]
+        )
         state["extractions"] = [ext.model_dump() for ext in extractions]
         
         success_msg = f"✅ Worker Agents: Completed {len(extractions)} extractions"
         state["progress_messages"].append(success_msg)
         try:
+            from scholarsync.chat.mode_router import enqueue_thought
             enqueue_thought(state["session_id"], success_msg)
         except Exception:
             pass
@@ -224,7 +238,9 @@ def checking_node(state: GraphState) -> GraphState:
 
     try:
         extractions = [ExtractedKnowledge(**ext) for ext in state["extractions"]]
-        validation_results = validate_all_extractions(extractions)
+        validation_results = validate_all_extractions(
+            extractions, session_id=state["session_id"]
+        )
         state["validation_results"] = [vr.model_dump() for vr in validation_results]
 
         avg_score = (
@@ -281,23 +297,83 @@ def should_correct(state: GraphState) -> str:
 
 
 def correction_node(state: GraphState) -> GraphState:
-    """Correction loop: re-run workers with feedback from checking agent."""
+    """
+    Feedback-augmented correction: re-run workers ONLY for failed
+    extractions, injecting the checker's correction_prompts as guidance.
+    """
     state["correction_count"] = state.get("correction_count", 0) + 1
     state["status"] = PipelineStatus.CORRECTING.value
     state["progress_messages"].append(
         f"🔄 Correction Loop #{state['correction_count']}: Re-extracting with feedback..."
     )
 
-    logger.info("Pipeline: Correction Loop #%d", state["correction_count"])
+    logger.info("Pipeline: Correction Loop #%d (feedback-augmented)", state["correction_count"])
 
-    # Re-run workers (they will get potentially different chunks due to random variance)
     try:
         subtasks = [SubTask(**st) for st in state["subtasks"]]
         paper_metadata = [PaperMetadata(**p) for p in state["paper_metadata"]]
-        extractions = run_worker_agents(subtasks, paper_metadata)
-        state["extractions"] = [ext.model_dump() for ext in extractions]
+        validation_results = [ValidationResult(**vr) for vr in state.get("validation_results", [])]
+        old_extractions = [ExtractedKnowledge(**ext) for ext in state["extractions"]]
+
+        # Identify which extractions failed and collect feedback
+        failed_paper_ids = set()
+        feedback_by_paper: dict[str, list[str]] = {}
+        for ext, vr in zip(old_extractions, validation_results):
+            if not vr.is_valid:
+                failed_paper_ids.add(ext.paper_id)
+                prompts = vr.correction_prompts or [vr.feedback] if vr.feedback else []
+                feedback_by_paper.setdefault(ext.paper_id, []).extend(prompts)
+
+        if not failed_paper_ids:
+            # All passed — nothing to correct
+            state["progress_messages"].append("✅ No failed extractions to correct")
+            return state
+
+        # Only re-run for failed papers
+        failed_metadata = [p for p in paper_metadata if p.paper_id in failed_paper_ids]
+
+        try:
+            from scholarsync.chat.mode_router import enqueue_thought
+            enqueue_thought(
+                state["session_id"],
+                f"  ↳ Re-extracting {len(failed_metadata)} failed papers with checker feedback",
+            )
+        except Exception:
+            pass
+
+        # Augment subtask prompts with checker feedback
+        augmented_subtasks = []
+        for st in subtasks:
+            new_prompt = st.prompt
+            # Append any correction feedback
+            all_feedback = []
+            for pid in failed_paper_ids:
+                all_feedback.extend(feedback_by_paper.get(pid, []))
+            if all_feedback:
+                feedback_text = "; ".join(all_feedback[:5])
+                new_prompt += f"\n\nPrevious extraction had issues. Corrections needed: {feedback_text}"
+            augmented_subtasks.append(
+                SubTask(
+                    task_id=st.task_id,
+                    task_type=st.task_type,
+                    description=st.description,
+                    assigned_paper_ids=st.assigned_paper_ids,
+                    prompt=new_prompt,
+                    status="pending",
+                )
+            )
+
+        new_extractions = run_worker_agents(
+            augmented_subtasks, failed_metadata, session_id=state["session_id"]
+        )
+
+        # Merge: keep passing extractions, replace failed ones
+        kept = [ext for ext in old_extractions if ext.paper_id not in failed_paper_ids]
+        merged = kept + new_extractions
+
+        state["extractions"] = [ext.model_dump() for ext in merged]
         state["progress_messages"].append(
-            f"✅ Correction: Re-extracted {len(extractions)} items"
+            f"✅ Correction: Re-extracted {len(new_extractions)} items, kept {len(kept)} passing"
         )
     except Exception as e:
         logger.error("Correction error: %s", e)
@@ -324,6 +400,7 @@ def synthesizer_node(state: GraphState) -> GraphState:
             validation_results=validation_results,
             paper_metadata=paper_metadata,
             graph_insights=graph_insights,
+            session_id=state["session_id"],
         )
 
         report_md = format_review_as_markdown(review)
@@ -332,6 +409,17 @@ def synthesizer_node(state: GraphState) -> GraphState:
         state["report_markdown"] = report_md
         state["status"] = PipelineStatus.COMPLETED.value
         state["progress_messages"].append("✅ Literature review generated successfully!")
+
+        # Log final budget
+        try:
+            from scholarsync.chat.llm_cache import get_pipeline_budget
+            budget = get_pipeline_budget(state["session_id"])
+            budget_msg = f"📊 Token usage: {budget.summary()}"
+            state["progress_messages"].append(budget_msg)
+            logger.info("Pipeline budget: %s", budget.summary())
+        except Exception:
+            pass
+
     except Exception as e:
         logger.error("Synthesizer error: %s", e)
         state["errors"].append(f"Synthesizer error: {str(e)}")
@@ -399,6 +487,12 @@ def run_pipeline(
     """
     logger.info("Starting pipeline for session %s: '%s'", session_id, query)
 
+    # Initialize pipeline budget
+    from scholarsync.chat.llm_cache import get_pipeline_budget, clear_pipeline_budget
+    clear_pipeline_budget(session_id)  # Fresh budget for each run
+    budget = get_pipeline_budget(session_id)
+    logger.info("Pipeline budget initialized: %d max tokens", budget.max_tokens)
+
     # Build and compile the graph
     workflow = build_pipeline()
     app = workflow.compile()
@@ -423,5 +517,9 @@ def run_pipeline(
     # Run the graph
     final_state = app.invoke(initial_state)
 
-    logger.info("Pipeline completed with status: %s", final_state.get("status"))
+    logger.info(
+        "Pipeline completed with status: %s | %s",
+        final_state.get("status"),
+        budget.summary(),
+    )
     return final_state

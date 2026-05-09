@@ -1,15 +1,16 @@
 """
 Grounding checker — evaluates extraction quality using RAGAS-style metrics.
 Provides faithfulness, relevancy, and context precision scores.
+
+FIXED: Uses KeyManager for API key rotation instead of raw Groq client.
 """
 
 from __future__ import annotations
 
 import json
 
-from groq import Groq
-
 from scholarsync.config.settings import get_settings
+from scholarsync.chat.key_manager import get_key_manager
 from scholarsync.rag.vector_store import search as vector_search
 from scholarsync.utils.logger import get_logger
 from scholarsync.utils.schemas import ExtractedKnowledge
@@ -59,8 +60,7 @@ def evaluate_faithfulness(
     """
     Evaluate faithfulness of an extraction against source context.
     """
-    settings = get_settings()
-    client = Groq(api_key=settings.groq_api_key)
+    km = get_key_manager()
 
     # Gather claims
     claims = extraction.findings + extraction.claims + extraction.methodology
@@ -76,8 +76,7 @@ def evaluate_faithfulness(
     source_text = "\n\n".join(c["text"] for c in source_chunks[:8])
     claims_text = "\n".join(f"- {c}" for c in claims[:15])
 
-    response = client.chat.completions.create(
-        model=settings.groq_model,
+    result = km.call_llm(
         messages=[
             {"role": "system", "content": FAITHFULNESS_PROMPT},
             {"role": "user", "content": f"Claims:\n{claims_text}\n\nSource Text:\n{source_text}"},
@@ -88,7 +87,7 @@ def evaluate_faithfulness(
     )
 
     try:
-        return json.loads(response.choices[0].message.content.strip())
+        return json.loads(result)
     except json.JSONDecodeError:
         return {"average_faithfulness": 0.5, "explanation": "Failed to parse evaluation"}
 
@@ -100,8 +99,7 @@ def evaluate_relevancy(
     """
     Evaluate relevancy of all extractions to the research query.
     """
-    settings = get_settings()
-    client = Groq(api_key=settings.groq_api_key)
+    km = get_key_manager()
 
     # Summarize extractions
     summary_parts = []
@@ -115,8 +113,7 @@ def evaluate_relevancy(
 
     extractions_text = "\n".join(summary_parts) or "No extractions"
 
-    response = client.chat.completions.create(
-        model=settings.groq_model,
+    result = km.call_llm(
         messages=[
             {"role": "system", "content": RELEVANCY_PROMPT},
             {
@@ -130,7 +127,7 @@ def evaluate_relevancy(
     )
 
     try:
-        return json.loads(response.choices[0].message.content.strip())
+        return json.loads(result)
     except json.JSONDecodeError:
         return {"relevancy_score": 0.5, "explanation": "Failed to parse evaluation"}
 

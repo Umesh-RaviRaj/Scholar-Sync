@@ -2166,9 +2166,25 @@
     function removeTypingIndicator() { const i = document.getElementById('typing-indicator'); if (i) i.remove(); }
 
     /* ================================================================
-       KNOWLEDGE GRAPH VISUALIZATION
+       KNOWLEDGE GRAPH VISUALIZATION — enhanced
     ================================================================ */
     let cyInstance = null;
+
+    // Color palette for entity types
+    const ENTITY_COLORS = {
+      'method':  { bg: '#6c5ce7', border: '#5a4bd1' },
+      'dataset': { bg: '#00b894', border: '#00a381' },
+      'metric':  { bg: '#e17055', border: '#d35a43' },
+      'concept': { bg: '#a388ee', border: '#8b6fd8' },
+      'tool':    { bg: '#0984e3', border: '#076bb3' },
+      'author':  { bg: '#fd79a8', border: '#e0608d' },
+      'Paper':   { bg: '#fdcb6e', border: '#e17055' },
+      'default': { bg: '#b2bec3', border: '#95a5a6' },
+    };
+
+    function getEntityColor(type) {
+      return ENTITY_COLORS[type] || ENTITY_COLORS[type?.toLowerCase()] || ENTITY_COLORS.default;
+    }
 
     async function openGraphModal() {
       const modal = document.getElementById('graph-modal');
@@ -2182,20 +2198,63 @@
       document.getElementById('graph-modal').classList.remove('visible');
     }
 
+    async function refreshGraph() {
+      if (cyInstance) { cyInstance.destroy(); cyInstance = null; }
+      await loadGraphData();
+    }
+
     async function loadGraphData() {
       const container = document.getElementById('cy');
       container.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-secondary)">Loading graph data from Neo4j...</div>';
+
+      // Create or update legend
+      let legend = document.getElementById('graph-legend');
+      if (!legend) {
+        legend = document.createElement('div');
+        legend.id = 'graph-legend';
+        legend.style.cssText = 'position:absolute;top:12px;left:12px;background:rgba(255,255,255,0.95);border:1px solid #e8eaf0;border-radius:10px;padding:12px 14px;font-size:11px;z-index:10;box-shadow:0 2px 8px rgba(0,0,0,0.1);';
+        legend.innerHTML = '<div style="font-weight:700;margin-bottom:6px;font-size:12px;">Entity Types</div>' +
+          Object.entries(ENTITY_COLORS).filter(([k]) => k !== 'default').map(([type, c]) =>
+            `<div style="display:flex;align-items:center;gap:6px;margin:3px 0;">
+              <span style="width:12px;height:12px;border-radius:${type === 'Paper' ? '50%' : '3px'};background:${c.bg};border:1.5px solid ${c.border};display:inline-block;"></span>
+              <span style="text-transform:capitalize;">${type}</span>
+            </div>`
+          ).join('');
+        container.parentElement.style.position = 'relative';
+        container.parentElement.appendChild(legend);
+      }
+
+      // Tooltip element
+      let tooltip = document.getElementById('graph-tooltip');
+      if (!tooltip) {
+        tooltip = document.createElement('div');
+        tooltip.id = 'graph-tooltip';
+        tooltip.style.cssText = 'display:none;position:absolute;background:#1a1a2e;color:#e2e8f0;padding:10px 14px;border-radius:8px;font-size:12px;max-width:280px;z-index:20;pointer-events:none;box-shadow:0 4px 16px rgba(0,0,0,0.3);line-height:1.5;';
+        container.parentElement.appendChild(tooltip);
+      }
+
       try {
         const resp = await fetch(API_BASE + '/graph_data');
         if (!resp.ok) throw new Error('Failed to fetch graph data');
         const data = await resp.json();
         
         if (!data.nodes || data.nodes.length === 0) {
-            container.innerHTML = '<div style="padding:40px;text-align:center;color:#e17055;"><strong>⚠️ Neo4j Knowledge Graph Offline or Empty</strong><p style="margin-top:10px;color:var(--text-secondary);">Could not connect to Neo4j on localhost:7687 or no entities extracted yet. Ensure Neo4j Desktop is running.</p></div>';
+            container.innerHTML = '<div style="padding:40px;text-align:center;color:#e17055;"><strong>\u26a0\ufe0f Neo4j Knowledge Graph Offline or Empty</strong><p style="margin-top:10px;color:var(--text-secondary);">Could not connect to Neo4j or no entities extracted yet. Run a Deep Research query first, then refresh.</p></div>';
             return;
         }
 
         container.innerHTML = ''; // clear loading
+
+        // Pre-process: assign colors based on entity type
+        data.nodes.forEach(n => {
+          const eType = n.data.entity_type || n.data.type || 'default';
+          const colors = getEntityColor(eType);
+          n.data._bgColor = colors.bg;
+          n.data._borderColor = colors.border;
+          // Compute node size from degree (min 25, max 60)
+          const deg = n.data.degree || 1;
+          n.data._size = Math.min(60, Math.max(25, 20 + deg * 5));
+        });
 
         cyInstance = cytoscape({
           container: container,
@@ -2208,30 +2267,32 @@
               selector: 'node',
               style: {
                 'label': 'data(label)',
-                'background-color': '#a388ee',
+                'background-color': 'data(_bgColor)',
                 'color': '#1a1a2e',
-                'text-valign': 'center',
+                'text-valign': 'bottom',
                 'text-halign': 'center',
-                'font-size': '10px',
-                'width': 'label',
-                'height': 'label',
-                'padding': '10px',
+                'font-size': '9px',
+                'font-weight': '500',
+                'width': 'data(_size)',
+                'height': 'data(_size)',
                 'shape': 'round-rectangle',
                 'text-wrap': 'wrap',
-                'text-max-width': '80px',
+                'text-max-width': '90px',
+                'text-margin-y': 6,
                 'border-width': 2,
-                'border-color': '#6c5ce7'
+                'border-color': 'data(_borderColor)',
+                'transition-property': 'background-color, border-color, width, height',
+                'transition-duration': '0.2s',
               }
             },
             {
               selector: 'node[type="Paper"]',
               style: {
-                'background-color': '#fdcb6e',
-                'border-color': '#e17055',
                 'shape': 'ellipse',
-                'width': '30px',
-                'height': '30px',
-                'padding': '15px'
+                'font-size': '10px',
+                'font-weight': '700',
+                'text-valign': 'center',
+                'text-halign': 'center',
               }
             },
             {
@@ -2243,17 +2304,114 @@
                 'target-arrow-shape': 'triangle',
                 'curve-style': 'bezier',
                 'label': 'data(label)',
-                'font-size': '8px',
+                'font-size': '7px',
                 'color': '#636e80',
-                'text-rotation': 'autorotate'
+                'text-rotation': 'autorotate',
+                'text-background-color': '#fff',
+                'text-background-opacity': 0.85,
+                'text-background-padding': '2px',
+                'transition-property': 'line-color, target-arrow-color, width',
+                'transition-duration': '0.2s',
               }
-            }
+            },
+            // Highlighted states
+            {
+              selector: 'node.highlighted',
+              style: {
+                'border-width': 4,
+                'border-color': '#ff6b6b',
+                'z-index': 10,
+              }
+            },
+            {
+              selector: 'node.faded',
+              style: {
+                'opacity': 0.2,
+              }
+            },
+            {
+              selector: 'edge.highlighted',
+              style: {
+                'line-color': '#ff6b6b',
+                'target-arrow-color': '#ff6b6b',
+                'width': 3,
+                'z-index': 10,
+              }
+            },
+            {
+              selector: 'edge.faded',
+              style: {
+                'opacity': 0.15,
+              }
+            },
           ],
           layout: {
             name: 'cose',
             animate: true,
-            idealEdgeLength: 100,
-            nodeOverlap: 20
+            animationDuration: 800,
+            idealEdgeLength: 120,
+            nodeOverlap: 30,
+            nodeRepulsion: function(node) { return 4500; },
+            edgeElasticity: function(edge) { return 45; },
+            gravity: 0.25,
+            numIter: 1000,
+            padding: 40,
+          }
+        });
+
+        // ── Tooltip on hover ──
+        cyInstance.on('mouseover', 'node', function(e) {
+          const node = e.target;
+          const d = node.data();
+          const type = d.entity_type || d.type || '';
+          const desc = d.description || 'No description';
+          const deg = d.degree || 0;
+          tooltip.innerHTML = `<div style="font-weight:700;margin-bottom:4px;">${escapeHtml(d.full_name || d.label)}</div>` +
+            `<div style="color:#a388ee;font-size:11px;text-transform:capitalize;margin-bottom:4px;">${type}</div>` +
+            `<div style="font-size:11px;opacity:0.85;">${escapeHtml(desc.substring(0, 200))}</div>` +
+            `<div style="margin-top:6px;font-size:10px;color:#636e80;">Connections: ${deg}</div>`;
+          const pos = node.renderedPosition();
+          const containerRect = container.getBoundingClientRect();
+          tooltip.style.left = (pos.x + containerRect.left + 20) + 'px';
+          tooltip.style.top = (pos.y + containerRect.top - 10) + 'px';
+          tooltip.style.display = 'block';
+        });
+
+        cyInstance.on('mouseover', 'edge', function(e) {
+          const edge = e.target;
+          const d = edge.data();
+          const desc = d.description || '';
+          if (desc || d.label) {
+            tooltip.innerHTML = `<div style="font-weight:600;margin-bottom:3px;">${escapeHtml(d.label || 'relationship')}</div>` +
+              (desc ? `<div style="font-size:11px;opacity:0.85;">${escapeHtml(desc.substring(0, 200))}</div>` : '');
+            const midpoint = edge.midpoint();
+            const containerRect = container.getBoundingClientRect();
+            tooltip.style.left = (midpoint.x + containerRect.left + 15) + 'px';
+            tooltip.style.top = (midpoint.y + containerRect.top - 10) + 'px';
+            tooltip.style.display = 'block';
+          }
+        });
+
+        cyInstance.on('mouseout', 'node, edge', function() {
+          tooltip.style.display = 'none';
+        });
+
+        // ── Click to highlight connected nodes ──
+        cyInstance.on('tap', 'node', function(e) {
+          const node = e.target;
+          // Reset all
+          cyInstance.elements().removeClass('highlighted faded');
+          // Fade everything
+          cyInstance.elements().addClass('faded');
+          // Highlight this node and its neighborhood
+          const neighborhood = node.neighborhood().add(node);
+          neighborhood.removeClass('faded').addClass('highlighted');
+        });
+
+        // Click background to reset
+        cyInstance.on('tap', function(e) {
+          if (e.target === cyInstance) {
+            cyInstance.elements().removeClass('highlighted faded');
           }
         });
 

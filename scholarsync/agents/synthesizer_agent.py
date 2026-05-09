@@ -206,8 +206,9 @@ Output valid JSON only."""
             {"role": "user", "content": user_prompt},
         ],
         temperature=0.3,
-        max_tokens=6000,  # Groq free tier: ~6000 tokens/min; 8192 caused quota errors
+        max_tokens=settings.synthesizer_max_tokens,
         response_format={"type": "json_object"},
+        session_id=session_id,
     )
 
     # ── Parse response ──────────────────────────────────────────────

@@ -1,10 +1,17 @@
 """
 GraphRAG engine — stores entities and relationships in Neo4j for
 cross-document reasoning, multi-hop queries, and entity linking.
+
+IMPROVED:
+  - Dynamic Neo4j relationship types (USES, IMPROVES_UPON, etc.)
+  - Rich graph export with relationship descriptions, entity types, degree
+  - Orphan node filtering
+  - Weighted edges based on relationship type
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from neo4j import GraphDatabase
@@ -17,6 +24,37 @@ logger = get_logger(__name__)
 
 # Module-level driver cache
 _driver = None
+
+# Map of semantic relationship types to valid Neo4j relationship type names
+_REL_TYPE_MAP = {
+    "uses": "USES",
+    "compares_with": "COMPARES_WITH",
+    "improves_upon": "IMPROVES_UPON",
+    "based_on": "BASED_ON",
+    "evaluated_on": "EVALUATED_ON",
+    "related_to": "RELATED_TO",
+    "part_of": "PART_OF",
+    "extends": "EXTENDS",
+    "implements": "IMPLEMENTS",
+    "outperforms": "OUTPERFORMS",
+    "applies": "APPLIES",
+    "produces": "PRODUCES",
+    "requires": "REQUIRES",
+    "contradicts": "CONTRADICTS",
+    "supports": "SUPPORTS",
+    "similar_to": "SIMILAR_TO",
+}
+
+
+def _sanitize_rel_type(raw: str) -> str:
+    """Convert a relationship type string to a valid Neo4j relationship type."""
+    normalized = raw.strip().lower().replace(" ", "_").replace("-", "_")
+    mapped = _REL_TYPE_MAP.get(normalized)
+    if mapped:
+        return mapped
+    # Fallback: uppercase and strip non-alphanumeric
+    cleaned = re.sub(r"[^A-Z0-9_]", "", normalized.upper())
+    return cleaned if cleaned else "RELATED_TO"
 
 
 def get_driver():
@@ -95,8 +133,9 @@ def add_entities(entities: list[Entity]) -> int:
 
 def add_relationships(relationships: list[Relationship]) -> int:
     """
-    Add relationship edges between entities.
-    Creates entities if they don't exist.
+    Add relationship edges between entities using DYNAMIC Neo4j
+    relationship types (USES, IMPROVES_UPON, etc.) instead of a
+    generic RELATES_TO for everything.
     """
     if not relationships:
         return 0
@@ -106,19 +145,23 @@ def add_relationships(relationships: list[Relationship]) -> int:
 
     with driver.session() as session:
         for rel in relationships:
+            neo4j_type = _sanitize_rel_type(rel.relationship_type)
+            # Use APOC or string interpolation for dynamic rel types
+            # Since we sanitize the type, injection is safe
             session.run(
-                """
-                MERGE (a:Entity {name: $source})
-                MERGE (b:Entity {name: $target})
-                MERGE (a)-[r:RELATES_TO {type: $rel_type}]->(b)
+                f"""
+                MERGE (a:Entity {{name: $source}})
+                MERGE (b:Entity {{name: $target}})
+                MERGE (a)-[r:{neo4j_type}]->(b)
                 SET r.description = $description,
-                    r.source_paper = $source_paper
+                    r.source_paper = $source_paper,
+                    r.semantic_type = $semantic_type
                 """,
                 source=rel.source_entity,
                 target=rel.target_entity,
-                rel_type=rel.relationship_type,
                 description=rel.description,
                 source_paper=rel.source_paper,
+                semantic_type=rel.relationship_type,
             )
             count += 1
 
@@ -224,8 +267,14 @@ def clear_graph():
 
 def get_full_graph_data_cytoscape() -> dict:
     """
-    Retrieve up to 500 nodes and export them in Cytoscape JSON format.
-    Catches connection errors gracefully if Neo4j is offline.
+    Retrieve graph data and export in Cytoscape JSON format.
+
+    IMPROVED:
+      - Edge labels use semantic_type property (not generic Neo4j type)
+      - Edge descriptions included for tooltips
+      - Node entity_type included for color-coding
+      - Orphan nodes (degree=0) filtered out
+      - Node degree included for sizing
     """
     try:
         driver = get_driver()
@@ -233,70 +282,108 @@ def get_full_graph_data_cytoscape() -> dict:
         edges = []
 
         with driver.session() as session:
+            # Get all relationships with connected nodes
             result = session.run(
                 """
-                MATCH (n)
-                OPTIONAL MATCH (n)-[r]->(m)
-                RETURN n, r, m LIMIT 500
+                MATCH (n)-[r]->(m)
+                RETURN n, r, m, type(r) AS rel_type
+                LIMIT 500
                 """
             )
+            connected_node_ids = set()
+
             for record in result:
                 n = record["n"]
+                r = record["r"]
+                m = record["m"]
+                rel_type = record["rel_type"]
+
+                # Process source node
                 if n is not None:
                     n_id = str(n.element_id)
+                    connected_node_ids.add(n_id)
                     if n_id not in nodes:
                         labels = list(n.labels)
                         lbl = labels[0] if labels else "Node"
                         name_field = "title" if lbl == "Paper" else "name"
                         val = n.get(name_field, "Unknown")
-                        if len(val) > 40: val = val[:37] + "..."
+                        display_val = val[:37] + "..." if len(val) > 40 else val
+                        entity_type = n.get("entity_type", lbl.lower())
                         nodes[n_id] = {
                             "data": {
                                 "id": n_id,
-                                "label": val,
+                                "label": display_val,
                                 "type": lbl,
-                                "group": lbl,
-                                "full_name": n.get(name_field, ""),
-                                "description": n.get("description", "")
+                                "entity_type": entity_type,
+                                "group": entity_type,
+                                "full_name": val,
+                                "description": n.get("description", ""),
+                                "degree": 0,
                             }
                         }
 
-                m = record["m"]
+                # Process target node
                 if m is not None:
                     m_id = str(m.element_id)
+                    connected_node_ids.add(m_id)
                     if m_id not in nodes:
                         labels = list(m.labels)
                         lbl = labels[0] if labels else "Node"
                         name_field = "title" if lbl == "Paper" else "name"
                         val = m.get(name_field, "Unknown")
-                        if len(val) > 40: val = val[:37] + "..."
+                        display_val = val[:37] + "..." if len(val) > 40 else val
+                        entity_type = m.get("entity_type", lbl.lower())
                         nodes[m_id] = {
                             "data": {
                                 "id": m_id,
-                                "label": val,
+                                "label": display_val,
                                 "type": lbl,
-                                "group": lbl,
-                                "full_name": m.get(name_field, ""),
-                                "description": m.get("description", "")
+                                "entity_type": entity_type,
+                                "group": entity_type,
+                                "full_name": val,
+                                "description": m.get("description", ""),
+                                "degree": 0,
                             }
                         }
 
-                r = record["r"]
+                # Process edge with semantic type
                 if r is not None and n is not None and m is not None:
+                    n_id = str(n.element_id)
+                    m_id = str(m.element_id)
+                    # Use the semantic_type property if available, else the Neo4j type
+                    semantic_label = r.get("semantic_type", rel_type)
+                    # Make it human-readable
+                    display_label = semantic_label.replace("_", " ").lower()
+                    description = r.get("description", "")
+
                     edges.append({
                         "data": {
                             "id": str(r.element_id),
-                            "source": str(n.element_id),
-                            "target": str(m.element_id),
-                            "label": r.type
+                            "source": n_id,
+                            "target": m_id,
+                            "label": display_label,
+                            "rel_type": rel_type,
+                            "description": description,
+                            "weight": 1,
                         }
                     })
 
+                    # Increment degree counts
+                    if n_id in nodes:
+                        nodes[n_id]["data"]["degree"] += 1
+                    if m_id in nodes:
+                        nodes[m_id]["data"]["degree"] += 1
+
+        # Filter out orphan nodes (only return connected nodes)
+        connected_nodes = [
+            node for nid, node in nodes.items()
+            if nid in connected_node_ids
+        ]
+
         return {
-            "nodes": list(nodes.values()),
+            "nodes": connected_nodes,
             "edges": edges
         }
     except Exception as e:
         logger.warning(f"Neo4j offline or unreachable: returning empty graph. Error: {e}")
         return {"nodes": [], "edges": []}
-
