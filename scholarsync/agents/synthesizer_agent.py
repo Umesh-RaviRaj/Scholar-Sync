@@ -17,31 +17,33 @@ from scholarsync.utils.schemas import (
     LiteratureReview,
     CitationEntry,
     PaperMetadata,
+    StructuredPaperProfile,
 )
+from scholarsync.agents.dedup import deduplicate_insights
+from scholarsync.agents.profile_builder import build_paper_profiles
 
 logger = get_logger(__name__)
 
 
-SYNTHESIS_SYSTEM_PROMPT = """You are the Final Synthesizer Agent of ScholarSync, a deep-research multi-agent literature review system.
+SYNTHESIS_SYSTEM_PROMPT = """You are the Final Synthesizer Agent of ScholarSync — a senior AI research analyst, NOT a summarization bot.
 
-Your role is to produce a COMPREHENSIVE, PUBLICATION-QUALITY literature review from validated extractions across multiple research papers.
-This is NOT a brief summary — this is deep academic research synthesis. Each section must be thorough and exhaustive.
+You produce ANALYTICAL, COMPARATIVE, DECISIVE literature reviews. You behave like a domain expert who ranks approaches, explains tradeoffs, and delivers technically justified verdicts.
 
 You MUST produce valid JSON with this structure:
 {
   "title": "Literature Review: [Specific Topic]",
 
-  "summary": "REQUIRED: A deep executive summary of AT LEAST 400 words. Cover: the research landscape, why this topic matters, what the key papers contribute collectively, major trends observed, and the overall state of the field. Be specific about methods, results, and significance.",
+  "summary": "Executive summary (300+ words). State the research landscape, the BEST approach identified, and WHY it dominates. Be decisive.",
 
-  "methodology_comparison": "REQUIRED: AT LEAST 600 words. Compare and contrast ALL methodologies found across papers in depth. Discuss: experimental setups, datasets used, evaluation metrics, model architectures, training procedures, and algorithmic approaches. Use a structured comparison — highlight where papers agree, differ, improve upon each other, or use complementary approaches. Always cite with [1], [2], etc.",
+  "methodology_comparison": "CRITICAL SECTION (500+ words). Compare ALL methodologies DIMENSION BY DIMENSION:\n- Retrieval quality\n- Semantic coherence\n- Scalability\n- Computational efficiency\n- Context preservation\n- Long-document handling\n- Production suitability\n- Retrieval latency\n- Embedding efficiency\n- Chunking intelligence\n\nFor each dimension: state which paper/method wins and why. Use specific numbers. Build a clear ranking. Do NOT repeat summaries — COMPARE and CONTRAST.",
 
-  "key_findings": "REQUIRED: AT LEAST 600 words. Synthesize the most important findings from ALL papers. Do NOT list them paper by paper — organize thematically. Include specific numbers, metrics, benchmark scores, and direct quotes where available. Discuss what these findings mean collectively and how they advance the field.",
+  "key_findings": "Thematic synthesis (400+ words). Organize by theme, not by paper. Include metrics, benchmarks, specific numbers. State what the collective evidence proves. Never repeat the same insight twice.",
 
-  "cross_paper_insights": "REQUIRED: AT LEAST 400 words. Identify non-obvious connections, patterns, and insights that ONLY emerge when reading all papers together. What do they collectively suggest? Are there contradictions? Convergent conclusions? Complementary techniques that could be combined? What story do these papers tell as a whole?",
+  "cross_paper_insights": "Non-obvious connections (300+ words). Contradictions, complementary techniques, convergent conclusions, emergent patterns. What story do these papers tell TOGETHER that no single paper reveals alone?",
 
-  "identified_risks": "REQUIRED: AT LEAST 300 words. Comprehensively document risks, limitations, threats to validity, ethical concerns, reproducibility issues, data biases, computational constraints, and generalization problems found across the literature. Be specific — cite which papers report which limitations.",
+  "identified_risks": "Limitations and risks (250+ words). Cite which papers report which problems. Group by: scalability risks, data risks, reproducibility risks, production risks.",
 
-  "research_gaps": "REQUIRED: AT LEAST 300 words. Identify specific, actionable gaps in the current literature. What questions remain unanswered? What datasets are missing? What methods have not been tried? What populations or domains are understudied? Propose concrete future research directions.",
+  "research_gaps": "Gaps and future work (250+ words). Specific actionable gaps. What datasets are missing? What hybrid approaches remain untested? What production scenarios are unaddressed?",
 
   "safety_scorecard": {
     "grounding_score": 0.85,
@@ -53,14 +55,14 @@ You MUST produce valid JSON with this structure:
 }
 
 CRITICAL RULES:
-1. ALWAYS cite with [paper_number] — every claim must be grounded in the source papers
-2. Never just list paper summaries — SYNTHESIZE and COMPARE across papers thematically
-3. Use specific data: numbers, percentages, benchmark names, dataset names, accuracy scores
-4. Include direct quotes from papers where they add value
-5. Write at a PhD / academic journal level — detailed, precise, and analytical
-6. Each section must meet its minimum word count — do NOT truncate
-7. Identify agreements AND contradictions across papers
-8. Output valid JSON only — do not add any text outside the JSON object
+1. ALWAYS cite with [paper_number]. Every claim must trace to a source.
+2. NEVER repeat the same insight in multiple sections. Each sentence must add new information.
+3. NEVER use weak conclusions like "it depends on the use case" or "all methods have tradeoffs". Be DECISIVE — pick winners, explain WHY, acknowledge limitations.
+4. Compare dimension-by-dimension, not paper-by-paper.
+5. Use specific data: numbers, percentages, benchmark names, dataset sizes.
+6. Rank approaches explicitly: "Method X outperforms Y because..."
+7. Discuss production suitability: latency, cost, scalability, deployment complexity.
+8. Output valid JSON only.
 """
 
 
@@ -71,6 +73,7 @@ def synthesize_review(
     paper_metadata: list[PaperMetadata],
     graph_insights: dict | None = None,
     session_id: str | None = None,
+    structured_profiles: list[StructuredPaperProfile] | None = None,
 ) -> LiteratureReview:
     """
     Synthesize a complete literature review from validated extractions.
@@ -87,6 +90,8 @@ def synthesize_review(
         Metadata for all papers.
     graph_insights : dict, optional
         Cross-paper insights from the knowledge graph.
+    structured_profiles : list[StructuredPaperProfile], optional
+        Pre-built structured profiles (zero-cost deterministic extraction).
 
     Returns
     -------
@@ -98,12 +103,15 @@ def synthesize_review(
     if session_id:
         try:
             from scholarsync.chat.mode_router import enqueue_thought
-            enqueue_thought(session_id, f"  ↳ Processing {len(extractions)} extracted knowledge chunks...")
+            enqueue_thought(session_id, f"  ↳ Building structured profiles and analytical synthesis...")
         except Exception:
             pass
 
+    # ── Build structured profiles if not provided ───────────────────
+    if not structured_profiles:
+        structured_profiles = build_paper_profiles(extractions, paper_metadata)
+
     # ── Build paper reference table ─────────────────────────────────
-    paper_map = {p.paper_id: p for p in paper_metadata}
     citations: list[CitationEntry] = []
     paper_ref_lines = []
 
@@ -123,82 +131,94 @@ def synthesize_review(
 
     paper_references = "\n".join(paper_ref_lines)
 
-    # ── Aggregate extractions by type ───────────────────────────────
-    all_entities = []
-    all_methodology = []
-    all_findings = []
-    all_risks = []
-    all_claims = []
+    # ── Build structured profile comparison table ───────────────────
+    profile_sections = []
+    for i, prof in enumerate(structured_profiles, 1):
+        idx = next(
+            (j for j, m in enumerate(paper_metadata, 1) if m.paper_id == prof.paper_id),
+            i,
+        )
+        section = f"""[{idx}] "{prof.paper_title}"
+  Problem: {prof.research_problem or 'Not specified'}
+  Methodology: {prof.methodology or 'Not specified'}
+  Chunking: {prof.chunking_strategy or 'Not specified'}
+  Retrieval: {prof.retrieval_strategy or 'Not specified'}
+  Embeddings: {', '.join(prof.embedding_models) or 'Not specified'}
+  Datasets: {', '.join(prof.datasets[:4]) or 'Not specified'}
+  Metrics: {', '.join(prof.evaluation_metrics[:4]) or 'Not specified'}
+  Advantages: {'; '.join(prof.advantages[:3]) or 'Not specified'}
+  Limitations: {'; '.join(prof.limitations[:3]) or 'Not specified'}
+  Scalability: {prof.scalability or 'Not specified'}
+  Cost: {prof.computational_cost or 'Not specified'}
+  Best use: {prof.best_use_case or 'Not specified'}
+  Contributions: {'; '.join(prof.key_contributions[:3]) or 'Not specified'}"""
+        profile_sections.append(section)
+
+    profiles_text = "\n\n".join(profile_sections)
+
+    # ── Aggregate and deduplicate supporting evidence ────────────────
+    all_findings_raw = []
+    all_claims_raw = []
 
     for ext in extractions:
-        pid = ext.paper_id
-        # Find the citation number for this paper
         paper_idx = next(
-            (i for i, m in enumerate(paper_metadata, 1) if m.paper_id == pid),
+            (j for j, m in enumerate(paper_metadata, 1) if m.paper_id == ext.paper_id),
             0,
         )
-        ref = f"[{paper_idx}]" if paper_idx else ""
-
-        for e in ext.entities:
-            all_entities.append(f"- {e.name} ({e.entity_type}): {e.description} {ref}")
-        for m in ext.methodology:
-            all_methodology.append(f"- {m} {ref}")
+        ref = f" [{paper_idx}]" if paper_idx else ""
         for f in ext.findings:
-            all_findings.append(f"- {f} {ref}")
-        for r in ext.risks:
-            all_risks.append(f"- {r} {ref}")
+            all_findings_raw.append(f"{f}{ref}")
         for c in ext.claims:
-            all_claims.append(f"- {c} {ref}")
+            all_claims_raw.append(f"{c}{ref}")
+
+    # Deduplicate
+    deduped_findings = deduplicate_insights(all_findings_raw)
+    deduped_claims = deduplicate_insights(all_claims_raw)
 
     # ── Build graph insights section ────────────────────────────────
     graph_section = ""
     if graph_insights:
         cross_paper = graph_insights.get("cross_paper_connections", [])
         if cross_paper:
-            graph_section = "\n\nCross-Paper Graph Connections:\n" + "\n".join(
-                f"- Entity '{c.get('entity', '')}' ({c.get('entity_type', '')}) "
-                f"appears in: {', '.join(c.get('papers', []))}"
-                for c in cross_paper[:15]
+            graph_section = "\nCross-Paper Connections:\n" + "\n".join(
+                f"- '{c.get('entity', '')}' ({c.get('entity_type', '')}) shared by: {', '.join(c.get('papers', []))}"
+                for c in cross_paper[:10]
             )
 
-    # ── Build validation summary ────────────────────────────────────
+    # ── Validation summary ──────────────────────────────────────────
     avg_score = (
         sum(v.overall_score for v in validation_results) / len(validation_results)
         if validation_results
         else 0.0
     )
 
-    # ── Construct the synthesis prompt ──────────────────────────────
+    # ── Construct the analytical synthesis prompt ───────────────────
     user_prompt = f"""Research Query: {query}
 
 Paper References:
 {paper_references}
 
-=== EXTRACTED ENTITIES & CONCEPTS ===
-{chr(10).join(all_entities[:200]) or "None extracted"}
+=== STRUCTURED PAPER PROFILES (compare these dimension-by-dimension) ===
+{profiles_text}
 
-=== EXTRACTED METHODOLOGY ===
-{chr(10).join(all_methodology[:150]) or "None extracted"}
+=== KEY FINDINGS (deduplicated) ===
+{chr(10).join('- ' + f for f in deduped_findings[:40]) or 'None'}
 
-=== EXTRACTED FINDINGS & RESULTS ===
-{chr(10).join(all_findings[:200]) or "None extracted"}
-
-=== EXTRACTED RISKS & LIMITATIONS ===
-{chr(10).join(all_risks[:150]) or "None extracted"}
-
-=== EXTRACTED CLAIMS & CONTRIBUTIONS ===
-{chr(10).join(all_claims[:150]) or "None extracted"}
+=== KEY CLAIMS (deduplicated) ===
+{chr(10).join('- ' + c for c in deduped_claims[:30]) or 'None'}
 {graph_section}
 
-Validation Average Score: {avg_score:.2f}
+Validation Score: {avg_score:.2f}
 
-Synthesize a comprehensive literature review from the above extractions.
-Use the citation numbers {', '.join(c.citation_id for c in citations)} to reference papers.
-Focus on cross-paper comparisons and thematic organization.
+INSTRUCTIONS:
+1. Compare papers dimension-by-dimension using the structured profiles above.
+2. Rank approaches — declare which methodology is STRONGEST and WHY.
+3. Never repeat the same insight. Each sentence must add new information.
+4. Be decisive in conclusions — avoid hedging.
 Output valid JSON only."""
 
-    # ── Call Groq LLM (via KeyManager for rotation/failover) ────────
-    logger.info("Synthesizer: generating literature review")
+    # ── Call Groq LLM ───────────────────────────────────────────────
+    logger.info("Synthesizer: generating analytical literature review")
 
     raw_text = km.call_llm(
         messages=[

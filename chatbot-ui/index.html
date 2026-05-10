@@ -2170,17 +2170,49 @@
     ================================================================ */
     let cyInstance = null;
 
-    // Color palette for entity types
+    // Color palette for entity types — expanded for richer graph semantics
     const ENTITY_COLORS = {
-      'method':  { bg: '#6c5ce7', border: '#5a4bd1' },
-      'dataset': { bg: '#00b894', border: '#00a381' },
-      'metric':  { bg: '#e17055', border: '#d35a43' },
-      'concept': { bg: '#a388ee', border: '#8b6fd8' },
-      'tool':    { bg: '#0984e3', border: '#076bb3' },
-      'author':  { bg: '#fd79a8', border: '#e0608d' },
-      'Paper':   { bg: '#fdcb6e', border: '#e17055' },
-      'default': { bg: '#b2bec3', border: '#95a5a6' },
+      'method':           { bg: '#6c5ce7', border: '#5a4bd1' },
+      'framework':        { bg: '#6c5ce7', border: '#5a4bd1' },
+      'architecture':     { bg: '#6c5ce7', border: '#5a4bd1' },
+      'algorithm':        { bg: '#6c5ce7', border: '#5a4bd1' },
+      'dataset':          { bg: '#00b894', border: '#00a381' },
+      'benchmark':        { bg: '#00b894', border: '#00a381' },
+      'metric':           { bg: '#e17055', border: '#d35a43' },
+      'evaluation':       { bg: '#e17055', border: '#d35a43' },
+      'concept':          { bg: '#a388ee', border: '#8b6fd8' },
+      'tool':             { bg: '#0984e3', border: '#076bb3' },
+      'author':           { bg: '#fd79a8', border: '#e0608d' },
+      'Paper':            { bg: '#fdcb6e', border: '#e17055' },
+      'chunking_method':  { bg: '#00cec9', border: '#009e9c' },
+      'retrieval_method': { bg: '#74b9ff', border: '#5496d6' },
+      'embedding':        { bg: '#ffeaa7', border: '#ddc76e' },
+      'category':         { bg: '#dfe6e9', border: '#b2bec3' },
+      'default':          { bg: '#b2bec3', border: '#95a5a6' },
     };
+
+    // Edge color palette by relationship semantic type
+    const EDGE_STYLES = {
+      'IMPROVES':      { color: '#00b894', width: 3, style: 'solid' },
+      'OUTPERFORMS':   { color: '#00b894', width: 3, style: 'solid' },
+      'COMPARES_WITH': { color: '#fdcb6e', width: 2, style: 'dashed' },
+      'EVALUATED_ON':  { color: '#e17055', width: 2, style: 'dotted' },
+      'USES':          { color: '#74b9ff', width: 2, style: 'solid' },
+      'BASED_ON':      { color: '#74b9ff', width: 2, style: 'solid' },
+      'CHUNKS_WITH':   { color: '#00cec9', width: 2, style: 'solid' },
+      'RETRIEVES_WITH':{ color: '#a388ee', width: 2, style: 'solid' },
+      'EMBEDS_WITH':   { color: '#ffeaa7', width: 2, style: 'solid' },
+      'LIMITS':        { color: '#d63031', width: 2, style: 'dashed' },
+      'CONTRADICTS':   { color: '#d63031', width: 2, style: 'dashed' },
+      'PART_OF':       { color: '#b2bec3', width: 1.5, style: 'dotted' },
+      'EXTENDS':       { color: '#6c5ce7', width: 2, style: 'solid' },
+      'OPTIMIZES':     { color: '#00b894', width: 2, style: 'solid' },
+    };
+
+    function getEdgeStyle(relType) {
+      const normalized = (relType || '').toUpperCase().replace(/ /g, '_');
+      return EDGE_STYLES[normalized] || { color: '#c8c8e0', width: 1.5, style: 'solid' };
+    }
 
     function getEntityColor(type) {
       return ENTITY_COLORS[type] || ENTITY_COLORS[type?.toLowerCase()] || ENTITY_COLORS.default;
@@ -2213,13 +2245,17 @@
         legend = document.createElement('div');
         legend.id = 'graph-legend';
         legend.style.cssText = 'position:absolute;top:12px;left:12px;background:rgba(255,255,255,0.95);border:1px solid #e8eaf0;border-radius:10px;padding:12px 14px;font-size:11px;z-index:10;box-shadow:0 2px 8px rgba(0,0,0,0.1);';
-        legend.innerHTML = '<div style="font-weight:700;margin-bottom:6px;font-size:12px;">Entity Types</div>' +
-          Object.entries(ENTITY_COLORS).filter(([k]) => k !== 'default').map(([type, c]) =>
-            `<div style="display:flex;align-items:center;gap:6px;margin:3px 0;">
-              <span style="width:12px;height:12px;border-radius:${type === 'Paper' ? '50%' : '3px'};background:${c.bg};border:1.5px solid ${c.border};display:inline-block;"></span>
-              <span style="text-transform:capitalize;">${type}</span>
-            </div>`
-          ).join('');
+        const legendTypes = ['method', 'dataset', 'metric', 'chunking_method', 'retrieval_method', 'embedding', 'concept', 'Paper', 'category'];
+      legend.innerHTML = '<div style="font-weight:700;margin-bottom:6px;font-size:12px;">Entity Types</div>' +
+          legendTypes.filter(k => ENTITY_COLORS[k]).map(type => {
+            const c = ENTITY_COLORS[type];
+            const shape = type === 'Paper' ? '50%' : type === 'category' ? '2px' : '3px';
+            const label = type.replace(/_/g, ' ');
+            return `<div style="display:flex;align-items:center;gap:6px;margin:3px 0;">
+              <span style="width:12px;height:12px;border-radius:${shape};background:${c.bg};border:1.5px solid ${c.border};display:inline-block;"></span>
+              <span style="text-transform:capitalize;">${label}</span>
+            </div>`;
+          }).join('');
         container.parentElement.style.position = 'relative';
         container.parentElement.appendChild(legend);
       }
@@ -2245,22 +2281,46 @@
 
         container.innerHTML = ''; // clear loading
 
-        // Pre-process: assign colors based on entity type
-        data.nodes.forEach(n => {
+        // Progressive rendering: limit initial display for large graphs
+        const MAX_INITIAL_NODES = 60;
+        let displayData = data;
+        let isFiltered = false;
+        if (data.nodes.length > MAX_INITIAL_NODES) {
+          // Sort by degree descending, keep top N
+          const sorted = [...data.nodes].sort((a, b) => (b.data.degree || 0) - (a.data.degree || 0));
+          const topNodes = sorted.slice(0, MAX_INITIAL_NODES);
+          const topIds = new Set(topNodes.map(n => n.data.id));
+          const filteredEdges = data.edges.filter(e => topIds.has(e.data.source) && topIds.has(e.data.target));
+          displayData = { nodes: topNodes, edges: filteredEdges };
+          isFiltered = true;
+        }
+
+        // Pre-process: assign colors and sizes based on entity type and degree
+        displayData.nodes.forEach(n => {
           const eType = n.data.entity_type || n.data.type || 'default';
           const colors = getEntityColor(eType);
           n.data._bgColor = colors.bg;
           n.data._borderColor = colors.border;
-          // Compute node size from degree (min 25, max 60)
+          // Dynamic node sizing: base 40, max 90, scaled by degree
           const deg = n.data.degree || 1;
-          n.data._size = Math.min(60, Math.max(25, 20 + deg * 5));
+          n.data._size = Math.min(90, Math.max(40, 30 + deg * 6));
+          // Dynamic font size: 10 to 16 based on importance
+          n.data._fontSize = Math.min(16, Math.max(10, 9 + deg * 1.5));
+        });
+
+        // Pre-process edges: assign colors and styles based on relationship type
+        displayData.edges.forEach(e => {
+          const style = getEdgeStyle(e.data.rel_type || e.data.label);
+          e.data._edgeColor = style.color;
+          e.data._edgeWidth = style.width;
+          e.data._edgeStyle = style.style;
         });
 
         cyInstance = cytoscape({
           container: container,
           elements: {
-            nodes: data.nodes,
-            edges: data.edges
+            nodes: displayData.nodes,
+            edges: displayData.edges
           },
           style: [
             {
@@ -2271,15 +2331,15 @@
                 'color': '#1a1a2e',
                 'text-valign': 'bottom',
                 'text-halign': 'center',
-                'font-size': '9px',
-                'font-weight': '500',
+                'font-size': 'data(_fontSize)',
+                'font-weight': '600',
                 'width': 'data(_size)',
                 'height': 'data(_size)',
                 'shape': 'round-rectangle',
                 'text-wrap': 'wrap',
-                'text-max-width': '90px',
-                'text-margin-y': 6,
-                'border-width': 2,
+                'text-max-width': '110px',
+                'text-margin-y': 8,
+                'border-width': 2.5,
                 'border-color': 'data(_borderColor)',
                 'transition-property': 'background-color, border-color, width, height',
                 'transition-duration': '0.2s',
@@ -2289,27 +2349,41 @@
               selector: 'node[type="Paper"]',
               style: {
                 'shape': 'ellipse',
-                'font-size': '10px',
+                'font-size': '12px',
                 'font-weight': '700',
                 'text-valign': 'center',
                 'text-halign': 'center',
               }
             },
             {
+              selector: 'node[entity_type="category"]',
+              style: {
+                'shape': 'diamond',
+                'font-size': '13px',
+                'font-weight': '700',
+                'text-valign': 'center',
+                'text-halign': 'center',
+                'border-width': 3,
+                'width': 70,
+                'height': 70,
+              }
+            },
+            {
               selector: 'edge',
               style: {
-                'width': 2,
-                'line-color': '#c8c8e0',
-                'target-arrow-color': '#c8c8e0',
+                'width': 'data(_edgeWidth)',
+                'line-color': 'data(_edgeColor)',
+                'target-arrow-color': 'data(_edgeColor)',
                 'target-arrow-shape': 'triangle',
                 'curve-style': 'bezier',
                 'label': 'data(label)',
-                'font-size': '7px',
-                'color': '#636e80',
+                'font-size': '8px',
+                'color': '#4a5568',
                 'text-rotation': 'autorotate',
                 'text-background-color': '#fff',
-                'text-background-opacity': 0.85,
-                'text-background-padding': '2px',
+                'text-background-opacity': 0.9,
+                'text-background-padding': '3px',
+                'line-style': 'data(_edgeStyle)',
                 'transition-property': 'line-color, target-arrow-color, width',
                 'transition-duration': '0.2s',
               }
@@ -2318,7 +2392,7 @@
             {
               selector: 'node.highlighted',
               style: {
-                'border-width': 4,
+                'border-width': 5,
                 'border-color': '#ff6b6b',
                 'z-index': 10,
               }
@@ -2326,7 +2400,7 @@
             {
               selector: 'node.faded',
               style: {
-                'opacity': 0.2,
+                'opacity': 0.15,
               }
             },
             {
@@ -2334,30 +2408,75 @@
               style: {
                 'line-color': '#ff6b6b',
                 'target-arrow-color': '#ff6b6b',
-                'width': 3,
+                'width': 4,
                 'z-index': 10,
               }
             },
             {
               selector: 'edge.faded',
               style: {
-                'opacity': 0.15,
+                'opacity': 0.1,
               }
             },
           ],
           layout: {
             name: 'cose',
             animate: true,
-            animationDuration: 800,
-            idealEdgeLength: 120,
-            nodeOverlap: 30,
-            nodeRepulsion: function(node) { return 4500; },
-            edgeElasticity: function(edge) { return 45; },
-            gravity: 0.25,
-            numIter: 1000,
-            padding: 40,
+            animationDuration: 1000,
+            idealEdgeLength: 180,
+            nodeOverlap: 40,
+            nodeRepulsion: function(node) { return 8000; },
+            edgeElasticity: function(edge) { return 50; },
+            gravity: 0.15,
+            numIter: 1500,
+            padding: 60,
+            nodeDimensionsIncludeLabels: true,
           }
         });
+
+        // Add 'Show All' button if graph was filtered
+        if (isFiltered) {
+          let showAllBtn = document.getElementById('graph-show-all');
+          if (!showAllBtn) {
+            showAllBtn = document.createElement('button');
+            showAllBtn.id = 'graph-show-all';
+            showAllBtn.textContent = `Show all ${data.nodes.length} nodes`;
+            showAllBtn.style.cssText = 'position:absolute;bottom:14px;left:14px;background:#6c5ce7;color:white;border:none;border-radius:8px;padding:8px 14px;font-size:12px;cursor:pointer;z-index:15;box-shadow:0 2px 8px rgba(0,0,0,0.2);';
+            showAllBtn.onclick = function() {
+              // Reload with all data
+              data.nodes.forEach(n => {
+                const eType = n.data.entity_type || n.data.type || 'default';
+                const colors = getEntityColor(eType);
+                n.data._bgColor = colors.bg;
+                n.data._borderColor = colors.border;
+                const deg = n.data.degree || 1;
+                n.data._size = Math.min(90, Math.max(40, 30 + deg * 6));
+                n.data._fontSize = Math.min(16, Math.max(10, 9 + deg * 1.5));
+              });
+              data.edges.forEach(e => {
+                const style = getEdgeStyle(e.data.rel_type || e.data.label);
+                e.data._edgeColor = style.color;
+                e.data._edgeWidth = style.width;
+                e.data._edgeStyle = style.style;
+              });
+              cyInstance.json({ elements: { nodes: data.nodes, edges: data.edges } });
+              cyInstance.layout({ name: 'cose', animate: true, animationDuration: 1000, idealEdgeLength: 180, nodeRepulsion: () => 8000, gravity: 0.15, numIter: 1500, padding: 60, nodeDimensionsIncludeLabels: true }).run();
+              showAllBtn.remove();
+            };
+            container.parentElement.appendChild(showAllBtn);
+          }
+        }
+
+        // Add zoom-to-fit button
+        let fitBtn = document.getElementById('graph-fit-btn');
+        if (!fitBtn) {
+          fitBtn = document.createElement('button');
+          fitBtn.id = 'graph-fit-btn';
+          fitBtn.textContent = '⊞ Fit';
+          fitBtn.style.cssText = 'position:absolute;bottom:14px;right:14px;background:#2d3436;color:white;border:none;border-radius:8px;padding:8px 12px;font-size:12px;cursor:pointer;z-index:15;box-shadow:0 2px 8px rgba(0,0,0,0.2);';
+          fitBtn.onclick = function() { cyInstance.fit(undefined, 40); };
+          container.parentElement.appendChild(fitBtn);
+        }
 
         // ── Tooltip on hover ──
         cyInstance.on('mouseover', 'node', function(e) {
@@ -2396,22 +2515,96 @@
           tooltip.style.display = 'none';
         });
 
-        // ── Click to highlight connected nodes ──
+        // ── Click to show entity detail panel with relationship reasons ──
         cyInstance.on('tap', 'node', function(e) {
           const node = e.target;
+          const d = node.data();
+
           // Reset all
           cyInstance.elements().removeClass('highlighted faded');
-          // Fade everything
           cyInstance.elements().addClass('faded');
-          // Highlight this node and its neighborhood
           const neighborhood = node.neighborhood().add(node);
           neighborhood.removeClass('faded').addClass('highlighted');
+
+          // Build info panel content
+          const connectedEdges = node.connectedEdges();
+          let relHtml = '';
+          connectedEdges.forEach(edge => {
+            const ed = edge.data();
+            const other = edge.source().id() === node.id() ? edge.target() : edge.source();
+            const otherData = other.data();
+            const direction = edge.source().id() === node.id() ? '→' : '←';
+            const relLabel = ed.label || 'related';
+            const reason = ed.description || `${d.label} ${relLabel} ${otherData.label}`;
+            relHtml += `<div style="margin:4px 0;padding:6px 8px;background:rgba(108,92,231,0.08);border-radius:6px;font-size:12px;">
+              <span style="color:#6c5ce7;font-weight:600;">${direction} ${escapeHtml(otherData.label || otherData.full_name)}</span>
+              <span style="color:#636e80;margin-left:6px;">[${escapeHtml(relLabel)}]</span>
+              <div style="color:#4a5568;font-size:11px;margin-top:2px;">${escapeHtml(reason.substring(0, 150))}</div>
+            </div>`;
+          });
+
+          // Create or update detail panel
+          let panel = document.getElementById('graph-detail-panel');
+          if (!panel) {
+            panel = document.createElement('div');
+            panel.id = 'graph-detail-panel';
+            panel.style.cssText = 'position:absolute;top:12px;right:12px;width:300px;max-height:80%;overflow-y:auto;background:rgba(255,255,255,0.97);border:1px solid #e8eaf0;border-radius:12px;padding:16px;font-size:13px;z-index:20;box-shadow:0 4px 20px rgba(0,0,0,0.15);';
+            container.parentElement.appendChild(panel);
+          }
+          panel.style.display = 'block';
+          panel.innerHTML = `
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+              <div style="font-size:16px;font-weight:700;color:#1a1a2e;">${escapeHtml(d.full_name || d.label)}</div>
+              <button onclick="document.getElementById('graph-detail-panel').style.display='none';cyInstance.elements().removeClass('highlighted faded');" style="background:none;border:none;font-size:18px;cursor:pointer;color:#636e80;">×</button>
+            </div>
+            <div style="color:#6c5ce7;font-size:12px;text-transform:capitalize;margin-bottom:6px;font-weight:600;">${d.entity_type || d.type || 'entity'} ${d.group ? '• ' + d.group : ''}</div>
+            <div style="color:#4a5568;margin-bottom:12px;line-height:1.5;">${escapeHtml(d.description || 'No description available')}</div>
+            <div style="font-size:11px;color:#636e80;margin-bottom:8px;">Connections: ${d.degree || 0}</div>
+            <div style="font-weight:700;font-size:13px;margin-bottom:8px;color:#1a1a2e;">Relationships & Reasons:</div>
+            ${relHtml || '<div style="color:#636e80;font-size:12px;">No connected entities</div>'}
+          `;
+        });
+
+        // Click on edge to show relationship detail
+        cyInstance.on('tap', 'edge', function(e) {
+          const edge = e.target;
+          const ed = edge.data();
+          const srcData = edge.source().data();
+          const tgtData = edge.target().data();
+
+          let panel = document.getElementById('graph-detail-panel');
+          if (!panel) {
+            panel = document.createElement('div');
+            panel.id = 'graph-detail-panel';
+            panel.style.cssText = 'position:absolute;top:12px;right:12px;width:300px;max-height:80%;overflow-y:auto;background:rgba(255,255,255,0.97);border:1px solid #e8eaf0;border-radius:12px;padding:16px;font-size:13px;z-index:20;box-shadow:0 4px 20px rgba(0,0,0,0.15);';
+            container.parentElement.appendChild(panel);
+          }
+          panel.style.display = 'block';
+          panel.innerHTML = `
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+              <div style="font-size:15px;font-weight:700;color:#1a1a2e;">Relationship Detail</div>
+              <button onclick="document.getElementById('graph-detail-panel').style.display='none';" style="background:none;border:none;font-size:18px;cursor:pointer;color:#636e80;">×</button>
+            </div>
+            <div style="text-align:center;margin:12px 0;">
+              <div style="font-weight:600;color:#6c5ce7;">${escapeHtml(srcData.label)}</div>
+              <div style="margin:6px 0;font-size:12px;color:#636e80;">↓ <span style="color:#e17055;font-weight:600;">${escapeHtml(ed.label || 'related')}</span> ↓</div>
+              <div style="font-weight:600;color:#6c5ce7;">${escapeHtml(tgtData.label)}</div>
+            </div>
+            <div style="background:rgba(108,92,231,0.06);border-radius:8px;padding:10px;margin-top:10px;">
+              <div style="font-weight:600;font-size:12px;color:#1a1a2e;margin-bottom:4px;">Why connected:</div>
+              <div style="color:#4a5568;font-size:12px;line-height:1.5;">${escapeHtml(ed.description || `${srcData.label} ${ed.label} ${tgtData.label}`)}</div>
+            </div>
+            ${ed.weight ? `<div style="margin-top:8px;font-size:11px;color:#636e80;">Importance: ${(ed.weight * 100).toFixed(0)}%</div>` : ''}
+            ${ed.source_paper ? `<div style="font-size:11px;color:#636e80;">Source: ${escapeHtml(ed.source_paper)}</div>` : ''}
+          `;
         });
 
         // Click background to reset
         cyInstance.on('tap', function(e) {
           if (e.target === cyInstance) {
             cyInstance.elements().removeClass('highlighted faded');
+            const panel = document.getElementById('graph-detail-panel');
+            if (panel) panel.style.display = 'none';
           }
         });
 
@@ -2546,4 +2739,4 @@
   </script>
 </body>
 
-</html>
+</html>

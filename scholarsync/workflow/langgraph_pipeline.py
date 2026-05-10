@@ -35,6 +35,8 @@ from scholarsync.agents.manager_agent import decompose_query
 from scholarsync.agents.worker_agent import run_worker_agents
 from scholarsync.agents.checking_agent import validate_all_extractions
 from scholarsync.agents.synthesizer_agent import synthesize_review, format_review_as_markdown
+from scholarsync.agents.profile_builder import build_paper_profiles
+from scholarsync.utils.schemas import StructuredPaperProfile
 from scholarsync.rag.graph_rag import (
     add_entities,
     add_relationships,
@@ -69,9 +71,15 @@ class GraphState(TypedDict):
     # Graph data
     graph_insights: dict
 
+    # Structured profiles (zero-cost deterministic extraction)
+    structured_profiles: list[dict]
+
     # Final output
     final_report: dict | None
     report_markdown: str
+
+    # Evaluation metrics (computed from actual data)
+    evaluation_metrics: dict
 
     # Errors
     errors: list[str]
@@ -382,6 +390,34 @@ def correction_node(state: GraphState) -> GraphState:
     return state
 
 
+def profile_node(state: GraphState) -> GraphState:
+    """Profile Builder: deterministic structured paper profiling (zero LLM cost)."""
+    logger.info("Pipeline: Profile Builder starting")
+    state["progress_messages"].append("📋 Profile Builder: Structuring paper profiles...")
+
+    try:
+        extractions = [ExtractedKnowledge(**ext) for ext in state["extractions"]]
+        paper_metadata = [PaperMetadata(**p) for p in state["paper_metadata"]]
+
+        profiles = build_paper_profiles(extractions, paper_metadata)
+        state["structured_profiles"] = [p.model_dump() for p in profiles]
+
+        state["progress_messages"].append(
+            f"✅ Profile Builder: {len(profiles)} structured profiles created"
+        )
+        try:
+            from scholarsync.chat.mode_router import enqueue_thought
+            enqueue_thought(state["session_id"], f"  ↳ Built {len(profiles)} structured paper profiles (zero-cost)")
+        except Exception:
+            pass
+    except Exception as e:
+        logger.error("Profile Builder error: %s", e)
+        state["structured_profiles"] = []
+        state["progress_messages"].append(f"⚠️ Profile Builder: Continuing without profiles ({str(e)})")
+
+    return state
+
+
 def synthesizer_node(state: GraphState) -> GraphState:
     """Synthesizer Agent: produce final literature review."""
     logger.info("Pipeline: Synthesizer starting")
@@ -394,6 +430,11 @@ def synthesizer_node(state: GraphState) -> GraphState:
         paper_metadata = [PaperMetadata(**p) for p in state["paper_metadata"]]
         graph_insights = state.get("graph_insights")
 
+        # Rebuild profiles from state
+        profiles = None
+        if state.get("structured_profiles"):
+            profiles = [StructuredPaperProfile(**p) for p in state["structured_profiles"]]
+
         review = synthesize_review(
             query=state["query"],
             extractions=extractions,
@@ -401,6 +442,7 @@ def synthesizer_node(state: GraphState) -> GraphState:
             paper_metadata=paper_metadata,
             graph_insights=graph_insights,
             session_id=state["session_id"],
+            structured_profiles=profiles,
         )
 
         report_md = format_review_as_markdown(review)
@@ -429,6 +471,71 @@ def synthesizer_node(state: GraphState) -> GraphState:
     return state
 
 
+def evaluation_node(state: GraphState) -> GraphState:
+    """Evaluation Node: compute real metrics on the generated output."""
+    logger.info("Pipeline: Running evaluation metrics")
+
+    report_md = state.get("report_markdown", "")
+    if not report_md:
+        state["progress_messages"].append("⚠️ Evaluation skipped (no report)")
+        return state
+
+    try:
+        from scholarsync.evaluation.evaluator import evaluate_pipeline_output
+        from scholarsync.rag.vector_store import search as vector_search
+
+        query = state["query"]
+
+        # Retrieve source chunks for evaluation
+        source_chunks = []
+        try:
+            results = vector_search(query=query, n_results=15)
+            source_chunks = [r["text"] for r in results if r.get("text")]
+        except Exception:
+            # Use methodology/findings from extractions as fallback source
+            for ext_data in state.get("extractions", []):
+                ext = ExtractedKnowledge(**ext_data) if isinstance(ext_data, dict) else ext_data
+                source_chunks.extend(ext.methodology[:3])
+                source_chunks.extend(ext.findings[:3])
+
+        paper_titles = [
+            p.get("title", "") if isinstance(p, dict) else p.title
+            for p in state.get("paper_metadata", [])
+        ]
+
+        evaluation = evaluate_pipeline_output(
+            query=query,
+            generated_text=report_md,
+            source_chunks=source_chunks,
+            paper_titles=paper_titles,
+        )
+
+        # Store evaluation in state
+        state["evaluation_metrics"] = evaluation.get("metrics", {})
+        overall = evaluation.get("metrics", {}).get("overall_quality", 0)
+        halluc = evaluation.get("hallucination_report", {}).get("hallucination_score", 0)
+        verdict = evaluation.get("summary", {}).get("overall_verdict", "")
+
+        state["progress_messages"].append(
+            f"📊 Evaluation: quality={overall:.2f} | hallucination={halluc:.2f} | {verdict}"
+        )
+
+        try:
+            from scholarsync.chat.mode_router import enqueue_thought
+            enqueue_thought(
+                state["session_id"],
+                f"  ↳ Evaluation complete: quality={overall:.2f}, hallucination_risk={halluc:.2f}"
+            )
+        except Exception:
+            pass
+
+    except Exception as e:
+        logger.error("Evaluation node error: %s", e)
+        state["progress_messages"].append(f"⚠️ Evaluation: skipped ({str(e)[:60]})")
+
+    return state
+
+
 # ── Build the LangGraph Pipeline ────────────────────────────────────
 
 def build_pipeline() -> StateGraph:
@@ -436,7 +543,7 @@ def build_pipeline() -> StateGraph:
     Construct the full LangGraph workflow.
 
     Graph:
-      manager → workers → graph_rag → checking → (correct | synthesize)
+      manager → workers → graph_rag → checking → (correct | profiler → synthesizer → evaluation)
       correct → checking  (loop back)
     """
     workflow = StateGraph(GraphState)
@@ -447,7 +554,9 @@ def build_pipeline() -> StateGraph:
     workflow.add_node("graph_rag", graph_rag_node)
     workflow.add_node("checking", checking_node)
     workflow.add_node("correction", correction_node)
+    workflow.add_node("profiler", profile_node)
     workflow.add_node("synthesizer", synthesizer_node)
+    workflow.add_node("evaluation", evaluation_node)
 
     # Define edges
     workflow.set_entry_point("manager")
@@ -455,12 +564,12 @@ def build_pipeline() -> StateGraph:
     workflow.add_edge("workers", "graph_rag")
     workflow.add_edge("graph_rag", "checking")
 
-    # Conditional: checking → synthesize or correct
+    # Conditional: checking → profiler (then synthesize) or correct
     workflow.add_conditional_edges(
         "checking",
         should_correct,
         {
-            "synthesize": "synthesizer",
+            "synthesize": "profiler",
             "correct": "correction",
         },
     )
@@ -468,8 +577,14 @@ def build_pipeline() -> StateGraph:
     # Correction loops back to checking
     workflow.add_edge("correction", "checking")
 
-    # Synthesizer is the end
-    workflow.add_edge("synthesizer", END)
+    # Profile builder feeds into synthesizer
+    workflow.add_edge("profiler", "synthesizer")
+
+    # Synthesizer feeds into evaluation
+    workflow.add_edge("synthesizer", "evaluation")
+
+    # Evaluation is the end
+    workflow.add_edge("evaluation", END)
 
     logger.info("LangGraph pipeline built successfully")
     return workflow
@@ -509,8 +624,10 @@ def run_pipeline(
         "validation_results": [],
         "correction_count": 0,
         "graph_insights": {},
+        "structured_profiles": [],
         "final_report": None,
         "report_markdown": "",
+        "evaluation_metrics": {},
         "errors": [],
     }
 

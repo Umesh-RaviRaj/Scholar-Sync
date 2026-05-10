@@ -19,17 +19,90 @@ from neo4j import GraphDatabase
 from scholarsync.config.settings import get_settings
 from scholarsync.utils.logger import get_logger
 from scholarsync.utils.schemas import Entity, Relationship
+from scholarsync.rag.entity_normalizer import (
+    normalize_entity_name,
+    deduplicate_entities,
+    deduplicate_relationships,
+    infer_category,
+    build_category_edges,
+)
 
 logger = get_logger(__name__)
 
 # Module-level driver cache
 _driver = None
 
+# ── In-memory graph store (works without Neo4j) ──────────────────────
+_memory_nodes: dict[str, dict] = {}   # name -> {name, entity_type, description, source_paper, category, degree}
+_memory_edges: list[dict] = []        # [{source, target, rel_type, description, source_paper}]
+_memory_papers: dict[str, dict] = {}  # paper_id -> {title, authors, year}
+
+
+def _memory_add_node(name: str, entity_type: str, description: str, source_paper: str) -> None:
+    """Add or update a node in the in-memory graph."""
+    key = normalize_entity_name(name)
+    existing = _memory_nodes.get(key)
+    if existing is None or len(description) > len(existing.get("description", "")):
+        _memory_nodes[key] = {
+            "name": name,
+            "entity_type": entity_type,
+            "description": description,
+            "source_paper": source_paper,
+            "category": infer_category(Entity(name=name, entity_type=entity_type, description=description)),
+            "degree": existing["degree"] if existing else 0,
+        }
+
+
+_EDGE_IMPORTANCE_WEIGHTS = {
+    "OUTPERFORMS": 1.0,
+    "IMPROVES": 0.9,
+    "USES": 0.7,
+    "EVALUATED_ON": 0.7,
+    "EXTENDS": 0.8,
+    "BASED_ON": 0.7,
+    "COMPARES_WITH": 0.8,
+    "CHUNKS_WITH": 0.6,
+    "RETRIEVES_WITH": 0.6,
+    "EMBEDS_WITH": 0.6,
+    "OPTIMIZES": 0.8,
+    "LIMITS": 0.5,
+    "PART_OF": 0.3,
+}
+
+
+def _compute_edge_weight(rel_type: str, source_paper: str) -> float:
+    """Compute semantic edge weight based on relationship type and cross-paper significance."""
+    base = _EDGE_IMPORTANCE_WEIGHTS.get(rel_type.upper(), 0.5)
+    # Cross-paper edges get a bonus (appear in multiple papers = more significant)
+    return base
+
+
+def _memory_add_edge(source: str, target: str, rel_type: str, description: str, source_paper: str) -> None:
+    """Add an edge to the in-memory graph with semantic weighting."""
+    weight = _compute_edge_weight(rel_type, source_paper)
+    _memory_edges.append({
+        "source": source,
+        "target": target,
+        "rel_type": rel_type,
+        "description": description,
+        "source_paper": source_paper,
+        "weight": weight,
+    })
+    # Increment degree for connected nodes
+    src_key = normalize_entity_name(source)
+    tgt_key = normalize_entity_name(target)
+    if src_key in _memory_nodes:
+        _memory_nodes[src_key]["degree"] = _memory_nodes[src_key].get("degree", 0) + 1
+    if tgt_key in _memory_nodes:
+        _memory_nodes[tgt_key]["degree"] = _memory_nodes[tgt_key].get("degree", 0) + 1
+
+
 # Map of semantic relationship types to valid Neo4j relationship type names
 _REL_TYPE_MAP = {
     "uses": "USES",
     "compares_with": "COMPARES_WITH",
     "improves_upon": "IMPROVES_UPON",
+    "improves": "IMPROVES",
     "based_on": "BASED_ON",
     "evaluated_on": "EVALUATED_ON",
     "related_to": "RELATED_TO",
@@ -43,6 +116,11 @@ _REL_TYPE_MAP = {
     "contradicts": "CONTRADICTS",
     "supports": "SUPPORTS",
     "similar_to": "SIMILAR_TO",
+    "chunks_with": "CHUNKS_WITH",
+    "retrieves_with": "RETRIEVES_WITH",
+    "embeds_with": "EMBEDS_WITH",
+    "optimizes": "OPTIMIZES",
+    "limits": "LIMITS",
 }
 
 
@@ -102,30 +180,47 @@ def add_entities(entities: list[Entity]) -> int:
     """
     Add entity nodes to the knowledge graph.
     Merges on name to avoid duplicates.
+    Also populates the in-memory graph for fallback visualization.
     """
     if not entities:
         return 0
 
-    driver = get_driver()
-    count = 0
+    # Normalize and deduplicate before storage
+    entities = deduplicate_entities(entities)
 
-    with driver.session() as session:
-        for entity in entities:
-            session.run(
-                """
-                MERGE (e:Entity {name: $name})
-                SET e.entity_type = $entity_type,
-                    e.description = $description,
-                    e.source_paper = $source_paper,
-                    e.source_chunk_id = $source_chunk_id
-                """,
-                name=entity.name,
-                entity_type=entity.entity_type,
-                description=entity.description,
-                source_paper=entity.source_paper,
-                source_chunk_id=entity.source_chunk_id,
-            )
-            count += 1
+    # Always populate in-memory graph
+    for entity in entities:
+        _memory_add_node(entity.name, entity.entity_type, entity.description, entity.source_paper)
+
+    # Add category nodes for hierarchy
+    category_edges = build_category_edges(entities)
+    for cat_name in set(infer_category(e) for e in entities):
+        _memory_add_node(cat_name, "category", f"Category: {cat_name}", "")
+    for edge in category_edges:
+        _memory_add_edge(edge.source_entity, edge.target_entity, edge.relationship_type, edge.description, edge.source_paper)
+
+    # Try Neo4j
+    count = len(entities)
+    try:
+        driver = get_driver()
+        with driver.session() as session:
+            for entity in entities:
+                session.run(
+                    """
+                    MERGE (e:Entity {name: $name})
+                    SET e.entity_type = $entity_type,
+                        e.description = $description,
+                        e.source_paper = $source_paper,
+                        e.source_chunk_id = $source_chunk_id
+                    """,
+                    name=entity.name,
+                    entity_type=entity.entity_type,
+                    description=entity.description,
+                    source_paper=entity.source_paper,
+                    source_chunk_id=entity.source_chunk_id,
+                )
+    except Exception as e:
+        logger.warning("Neo4j unavailable for add_entities (using in-memory): %s", e)
 
     logger.info("Added/merged %d entities to graph", count)
     return count
@@ -136,34 +231,52 @@ def add_relationships(relationships: list[Relationship]) -> int:
     Add relationship edges between entities using DYNAMIC Neo4j
     relationship types (USES, IMPROVES_UPON, etc.) instead of a
     generic RELATES_TO for everything.
+    Also populates the in-memory graph for fallback visualization.
     """
     if not relationships:
         return 0
 
-    driver = get_driver()
-    count = 0
+    # Normalize and deduplicate
+    relationships = deduplicate_relationships(relationships)
 
-    with driver.session() as session:
-        for rel in relationships:
-            neo4j_type = _sanitize_rel_type(rel.relationship_type)
-            # Use APOC or string interpolation for dynamic rel types
-            # Since we sanitize the type, injection is safe
-            session.run(
-                f"""
-                MERGE (a:Entity {{name: $source}})
-                MERGE (b:Entity {{name: $target}})
-                MERGE (a)-[r:{neo4j_type}]->(b)
-                SET r.description = $description,
-                    r.source_paper = $source_paper,
-                    r.semantic_type = $semantic_type
-                """,
-                source=rel.source_entity,
-                target=rel.target_entity,
-                description=rel.description,
-                source_paper=rel.source_paper,
-                semantic_type=rel.relationship_type,
-            )
-            count += 1
+    # Always populate in-memory graph
+    for rel in relationships:
+        _memory_add_edge(
+            rel.source_entity, rel.target_entity,
+            rel.relationship_type, rel.description, rel.source_paper,
+        )
+        # Ensure source/target nodes exist in memory
+        src_key = normalize_entity_name(rel.source_entity)
+        tgt_key = normalize_entity_name(rel.target_entity)
+        if src_key not in _memory_nodes:
+            _memory_add_node(rel.source_entity, "concept", "", rel.source_paper)
+        if tgt_key not in _memory_nodes:
+            _memory_add_node(rel.target_entity, "concept", "", rel.source_paper)
+
+    # Try Neo4j
+    count = len(relationships)
+    try:
+        driver = get_driver()
+        with driver.session() as session:
+            for rel in relationships:
+                neo4j_type = _sanitize_rel_type(rel.relationship_type)
+                session.run(
+                    f"""
+                    MERGE (a:Entity {{name: $source}})
+                    MERGE (b:Entity {{name: $target}})
+                    MERGE (a)-[r:{neo4j_type}]->(b)
+                    SET r.description = $description,
+                        r.source_paper = $source_paper,
+                        r.semantic_type = $semantic_type
+                    """,
+                    source=rel.source_entity,
+                    target=rel.target_entity,
+                    description=rel.description,
+                    source_paper=rel.source_paper,
+                    semantic_type=rel.relationship_type,
+                )
+    except Exception as e:
+        logger.warning("Neo4j unavailable for add_relationships (using in-memory): %s", e)
 
     logger.info("Added/merged %d relationships to graph", count)
     return count
@@ -171,30 +284,37 @@ def add_relationships(relationships: list[Relationship]) -> int:
 
 def add_paper_node(paper_id: str, title: str, authors: list[str], year: int | None = None):
     """Add a paper reference node and link entities to it."""
-    driver = get_driver()
-    with driver.session() as session:
-        session.run(
-            """
-            MERGE (p:Paper {paper_id: $paper_id})
-            SET p.title = $title,
-                p.authors = $authors,
-                p.year = $year
-            """,
-            paper_id=paper_id,
-            title=title,
-            authors=authors,
-            year=year,
-        )
+    # Always populate in-memory store
+    _memory_papers[paper_id] = {"title": title, "authors": authors, "year": year}
+    _memory_add_node(title, "Paper", f"Paper: {title}", paper_id)
 
-        # Link entities from this paper to the paper node
-        session.run(
-            """
-            MATCH (e:Entity {source_paper: $paper_id})
-            MATCH (p:Paper {paper_id: $paper_id})
-            MERGE (e)-[:FOUND_IN]->(p)
-            """,
-            paper_id=paper_id,
-        )
+    try:
+        driver = get_driver()
+        with driver.session() as session:
+            session.run(
+                """
+                MERGE (p:Paper {paper_id: $paper_id})
+                SET p.title = $title,
+                    p.authors = $authors,
+                    p.year = $year
+                """,
+                paper_id=paper_id,
+                title=title,
+                authors=authors,
+                year=year,
+            )
+
+            # Link entities from this paper to the paper node
+            session.run(
+                """
+                MATCH (e:Entity {source_paper: $paper_id})
+                MATCH (p:Paper {paper_id: $paper_id})
+                MERGE (e)-[:FOUND_IN]->(p)
+                """,
+                paper_id=paper_id,
+            )
+    except Exception as e:
+        logger.warning("Neo4j unavailable for add_paper_node (using in-memory): %s", e)
 
 
 def query_related_entities(entity_name: str, max_hops: int = 2) -> list[dict]:
@@ -265,29 +385,100 @@ def clear_graph():
         session.run("MATCH (n) DETACH DELETE n")
         logger.info("Knowledge graph cleared")
 
+def _get_memory_graph_cytoscape() -> dict:
+    """
+    Build Cytoscape JSON from the in-memory graph store.
+    Used as fallback when Neo4j is unavailable.
+    """
+    nodes = []
+    edges = []
+    node_id_map: dict[str, str] = {}  # normalized_name -> id
+
+    # Build nodes
+    for idx, (key, node_data) in enumerate(_memory_nodes.items()):
+        node_id = f"mem_{idx}"
+        node_id_map[key] = node_id
+        name = node_data["name"]
+        display_val = name[:37] + "..." if len(name) > 40 else name
+        entity_type = node_data.get("entity_type", "concept")
+        category = node_data.get("category", "Concepts")
+        degree = node_data.get("degree", 0)
+
+        nodes.append({
+            "data": {
+                "id": node_id,
+                "label": display_val,
+                "type": "Category" if entity_type == "category" else "Entity",
+                "entity_type": entity_type,
+                "group": category,
+                "full_name": name,
+                "description": node_data.get("description", ""),
+                "degree": degree,
+            }
+        })
+
+    # Build edges
+    for idx, edge_data in enumerate(_memory_edges):
+        src_key = normalize_entity_name(edge_data["source"])
+        tgt_key = normalize_entity_name(edge_data["target"])
+        src_id = node_id_map.get(src_key)
+        tgt_id = node_id_map.get(tgt_key)
+
+        if src_id and tgt_id and src_id != tgt_id:
+            rel_type = edge_data.get("rel_type", "RELATED_TO")
+            display_label = rel_type.replace("_", " ").lower()
+            semantic_weight = edge_data.get("weight", 0.5)
+            edges.append({
+                "data": {
+                    "id": f"edge_{idx}",
+                    "source": src_id,
+                    "target": tgt_id,
+                    "label": display_label,
+                    "rel_type": rel_type,
+                    "description": edge_data.get("description", ""),
+                    "weight": semantic_weight,
+                    "source_paper": edge_data.get("source_paper", ""),
+                }
+            })
+
+    # Filter orphan nodes (keep only those with edges)
+    connected_ids = set()
+    for e in edges:
+        connected_ids.add(e["data"]["source"])
+        connected_ids.add(e["data"]["target"])
+
+    connected_nodes = [n for n in nodes if n["data"]["id"] in connected_ids]
+
+    return {"nodes": connected_nodes, "edges": edges}
+
+
 def get_full_graph_data_cytoscape() -> dict:
     """
     Retrieve graph data and export in Cytoscape JSON format.
 
     IMPROVED:
+      - Tries Neo4j first; falls back to in-memory graph
       - Edge labels use semantic_type property (not generic Neo4j type)
       - Edge descriptions included for tooltips
       - Node entity_type included for color-coding
       - Orphan nodes (degree=0) filtered out
       - Node degree included for sizing
+      - Category nodes for hierarchical structure
     """
+    # Try Neo4j first
     try:
         driver = get_driver()
+        driver.verify_connectivity()
+
         nodes = {}
         edges = []
 
         with driver.session() as session:
-            # Get all relationships with connected nodes
             result = session.run(
                 """
                 MATCH (n)-[r]->(m)
                 RETURN n, r, m, type(r) AS rel_type
-                LIMIT 500
+                LIMIT 1000
                 """
             )
             connected_node_ids = set()
@@ -298,7 +489,6 @@ def get_full_graph_data_cytoscape() -> dict:
                 m = record["m"]
                 rel_type = record["rel_type"]
 
-                # Process source node
                 if n is not None:
                     n_id = str(n.element_id)
                     connected_node_ids.add(n_id)
@@ -309,20 +499,20 @@ def get_full_graph_data_cytoscape() -> dict:
                         val = n.get(name_field, "Unknown")
                         display_val = val[:37] + "..." if len(val) > 40 else val
                         entity_type = n.get("entity_type", lbl.lower())
+                        category = infer_category(Entity(name=val, entity_type=entity_type, description=""))
                         nodes[n_id] = {
                             "data": {
                                 "id": n_id,
                                 "label": display_val,
                                 "type": lbl,
                                 "entity_type": entity_type,
-                                "group": entity_type,
+                                "group": category,
                                 "full_name": val,
                                 "description": n.get("description", ""),
                                 "degree": 0,
                             }
                         }
 
-                # Process target node
                 if m is not None:
                     m_id = str(m.element_id)
                     connected_node_ids.add(m_id)
@@ -333,26 +523,24 @@ def get_full_graph_data_cytoscape() -> dict:
                         val = m.get(name_field, "Unknown")
                         display_val = val[:37] + "..." if len(val) > 40 else val
                         entity_type = m.get("entity_type", lbl.lower())
+                        category = infer_category(Entity(name=val, entity_type=entity_type, description=""))
                         nodes[m_id] = {
                             "data": {
                                 "id": m_id,
                                 "label": display_val,
                                 "type": lbl,
                                 "entity_type": entity_type,
-                                "group": entity_type,
+                                "group": category,
                                 "full_name": val,
                                 "description": m.get("description", ""),
                                 "degree": 0,
                             }
                         }
 
-                # Process edge with semantic type
                 if r is not None and n is not None and m is not None:
                     n_id = str(n.element_id)
                     m_id = str(m.element_id)
-                    # Use the semantic_type property if available, else the Neo4j type
                     semantic_label = r.get("semantic_type", rel_type)
-                    # Make it human-readable
                     display_label = semantic_label.replace("_", " ").lower()
                     description = r.get("description", "")
 
@@ -368,22 +556,23 @@ def get_full_graph_data_cytoscape() -> dict:
                         }
                     })
 
-                    # Increment degree counts
                     if n_id in nodes:
                         nodes[n_id]["data"]["degree"] += 1
                     if m_id in nodes:
                         nodes[m_id]["data"]["degree"] += 1
 
-        # Filter out orphan nodes (only return connected nodes)
         connected_nodes = [
             node for nid, node in nodes.items()
             if nid in connected_node_ids
         ]
 
-        return {
-            "nodes": connected_nodes,
-            "edges": edges
-        }
+        if connected_nodes:
+            return {"nodes": connected_nodes, "edges": edges}
+
+        # Neo4j connected but empty — try in-memory
+        logger.info("Neo4j graph empty, using in-memory graph")
+        return _get_memory_graph_cytoscape()
+
     except Exception as e:
-        logger.warning(f"Neo4j offline or unreachable: returning empty graph. Error: {e}")
-        return {"nodes": [], "edges": []}
+        logger.info("Neo4j unavailable (%s) — using in-memory graph", e)
+        return _get_memory_graph_cytoscape()

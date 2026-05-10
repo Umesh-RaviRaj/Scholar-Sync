@@ -94,6 +94,28 @@ class ExtractedKnowledge(BaseModel):
     relationships: list[Relationship] = Field(default_factory=list)
 
 
+# ── Structured Paper Profile ──────────────────────────────────────────
+
+class StructuredPaperProfile(BaseModel):
+    """Structured intermediate representation of a paper's research contribution.
+    Built deterministically from ExtractedKnowledge before synthesis."""
+    paper_id: str
+    paper_title: str
+    research_problem: str = ""
+    methodology: str = ""
+    chunking_strategy: str = ""
+    retrieval_strategy: str = ""
+    embedding_models: list[str] = Field(default_factory=list)
+    datasets: list[str] = Field(default_factory=list)
+    evaluation_metrics: list[str] = Field(default_factory=list)
+    advantages: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    computational_cost: str = ""
+    scalability: str = ""
+    best_use_case: str = ""
+    key_contributions: list[str] = Field(default_factory=list)
+
+
 # ── Subtask Model ────────────────────────────────────────────────────
 
 class SubTask(BaseModel):

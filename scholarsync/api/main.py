@@ -333,6 +333,88 @@ async def get_graph_data():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── Evaluation Endpoint ───────────────────────────────────────────────
+
+@app.get("/evaluate/{session_id}")
+async def evaluate_session(session_id: str):
+    """
+    Run the real evaluation pipeline on a completed pipeline session.
+    Returns computed metrics (nDCG, Precision@K, Faithfulness, Hallucination, etc.)
+    ALL metrics are computed from actual data — no heuristic self-scoring.
+    """
+    from scholarsync.evaluation.evaluator import evaluate_pipeline_output
+    from scholarsync.rag.vector_store import search as vector_search
+
+    session = sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    pipeline_state = session.get("pipeline_state") or {}
+    report_md = pipeline_state.get("report_markdown", "")
+    if not report_md:
+        raise HTTPException(status_code=400, detail="No report generated yet")
+
+    # Gather source chunks used for this session
+    query = pipeline_state.get("query", "")
+    paper_metadata = session.get("paper_metadata", [])
+    paper_titles = [p.title if hasattr(p, "title") else p.get("title", "") for p in paper_metadata]
+
+    # Retrieve chunks that were used
+    source_chunks = []
+    try:
+        results = vector_search(query=query, n_results=15)
+        source_chunks = [r["text"] for r in results if r.get("text")]
+    except Exception as e:
+        logger.warning("Could not retrieve source chunks for evaluation: %s", e)
+
+    # Run evaluation
+    try:
+        evaluation = evaluate_pipeline_output(
+            query=query,
+            generated_text=report_md,
+            source_chunks=source_chunks,
+            paper_titles=paper_titles,
+        )
+        return evaluation
+    except Exception as e:
+        logger.error("Evaluation failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Evaluation failed: {str(e)}")
+
+
+# ── Web Search Endpoint (optional manual trigger) ────────────────────
+
+@app.get("/web_search")
+async def web_search_endpoint(query: str):
+    """
+    Manual web search endpoint for research augmentation.
+    Returns scored and filtered results from trusted sources.
+    """
+    from scholarsync.research.web_search import web_search, format_web_results_for_context
+
+    try:
+        response = web_search(query, max_results=8)
+        return {
+            "query": response.query,
+            "search_engine": response.search_engine,
+            "result_count": len(response.results),
+            "results": [
+                {
+                    "title": r.title,
+                    "url": r.url,
+                    "snippet": r.snippet,
+                    "source_domain": r.source_domain,
+                    "trust_score": r.trust_score,
+                    "is_trusted": r.is_trusted,
+                }
+                for r in response.results
+            ],
+            "formatted_context": format_web_results_for_context(response),
+        }
+    except Exception as e:
+        logger.error("Web search endpoint error: %s", e)
+        raise HTTPException(status_code=500, detail=f"Web search failed: {str(e)}")
+
+
 # ── Ask — Mode-Aware Chat (no auth required for embedded UI) ────────
 
 class AskRequest(BaseModel):

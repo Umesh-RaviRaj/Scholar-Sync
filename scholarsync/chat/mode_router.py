@@ -20,6 +20,7 @@ from scholarsync.chat.key_manager import get_key_manager
 from scholarsync.chat.graphrag_service import get_context
 from scholarsync.config.settings import get_settings
 from scholarsync.utils.logger import get_logger
+from scholarsync.research.retrieval_fusion import fuse_retrieval
 
 logger = get_logger(__name__)
 
@@ -70,7 +71,14 @@ Response rules by query type:
 - Always reference source papers by name when citing claims
 - Use markdown sparingly (bold key terms, bullet lists only when needed)
 - NO paragraph dumping, NO unnecessary headers, NO walls of text
-- Be conversational and helpful, not robotic"""
+- Be conversational and helpful, not robotic
+
+SOURCE GROUNDING RULES:
+- Clearly distinguish paper-grounded claims from web-discovered information
+- If web results are present, prefix web-sourced insights with [Web] tag
+- NEVER present web findings as if they came from uploaded papers
+- Paper evidence always takes priority over web sources
+- If a web claim contradicts paper evidence, note the discrepancy"""
 
 
 DEEP_DECOMPOSE_PROMPT = """You are a research planning agent. Given a research question, decompose it into exactly 4 focused sub-questions covering: definitions/background, methodologies, key findings, and limitations.
@@ -78,45 +86,76 @@ DEEP_DECOMPOSE_PROMPT = """You are a research planning agent. Given a research q
 Output JSON: {"sub_questions": ["...", "...", "...", "..."]}"""
 
 
-DEEP_SYNTHESIS_PROMPT = """You are ScholarSync in DEEP RESEARCH MODE. Produce a COMPREHENSIVE literature analysis.
+DEEP_SYNTHESIS_PROMPT = """You are ScholarSync in DEEP RESEARCH MODE — a SENIOR AI RESEARCH ANALYST producing publication-quality analysis.
+
+You are NOT a summarization bot. You are an analytical, comparative, decisive researcher.
 
 MANDATORY FORMAT:
 
-# [Descriptive Title]
+# [Descriptive Research Title]
 
-## Summary
-2+ detailed paragraphs covering the overall research landscape.
+## Executive Summary
+2+ paragraphs — the overall research landscape, key tension points, and decisive conclusions.
 
 ## Key Insights
-5–8 bullet points, each with a bold heading and 2–3 sentence explanation.
+5–8 bullet points with **bold headings** and 2–3 sentence explanation. Each must add unique information.
 
 ## Detailed Analysis
 
 ### Background & Definitions
-Foundational concepts, key terms — 2+ paragraphs.
+Foundational concepts, key terms, evolution of the field — 2+ paragraphs.
 
-### Methodologies & Approaches
-How different methods work — 3+ paragraphs.
+### Methodology Comparison (DIMENSION-BY-DIMENSION)
+For EACH major approach, compare:
+- Core mechanism and architecture
+- Strengths vs. weaknesses (tradeoff analysis)
+- Computational cost and scalability
+- Best use cases
+RANK approaches — declare which is STRONGEST and WHY.
+Include a comparison table if 3+ methods exist.
 
-### Results & Findings
-Experimental results, metrics — 3+ paragraphs with specific numbers.
+### Quantitative Results & Findings
+Specific metrics, benchmark numbers, performance comparisons — 3+ paragraphs.
+ONLY include numbers explicitly found in source material.
+If exact numbers are unavailable, use qualitative language ("significant improvement", "marginal gain").
+NEVER fabricate benchmark values.
 
-### Comparative Analysis
-Compare/contrast approaches. Include a comparison table if applicable.
+### Cross-Paper Reasoning & Synthesis
+How findings from different papers relate, contradict, or reinforce each other.
+Identify: agreements, conflicts, complementary insights, emergent patterns.
 
-### Limitations & Challenges
-Limitations, risks, unresolved issues — 2+ paragraphs.
+### Tradeoff Analysis
+For each approach: what do you gain vs. what do you lose?
+Practical implications for different deployment scenarios.
+
+### Limitations & Open Challenges
+Specific limitations per approach, unresolved issues, failure modes — 2+ paragraphs.
 
 ## Future Directions
-Open questions, promising directions — 1+ paragraph.
+Open questions, promising research directions, gaps in current work — 1+ paragraph.
 
 ## Conclusion
-Thorough synthesis — 2+ paragraphs.
+DECISIVE synthesis — 2+ paragraphs. State clear recommendations:
+- Best approach for [scenario A] is X because...
+- Best approach for [scenario B] is Y because...
+Do NOT hedge unnecessarily. Be analytical and conclusive.
 
 ## References
-List source papers referenced.
+List all source papers referenced with [1], [2], etc.
 
-CRITICAL: Every section must have substantial content. Use specific data and paper names. No vague summaries."""
+SOURCE GROUNDING RULES:
+- Clearly distinguish paper-grounded claims from web-discovered information
+- If web results are present, prefix web-sourced insights with [Web]
+- NEVER present web findings as if they came from uploaded papers
+- NEVER invent benchmark numbers or specific metrics
+- Paper evidence ALWAYS takes priority over web sources
+
+CRITICAL: 
+1. Every sentence must add NEW information — no repetition.
+2. Be DECISIVE in conclusions — avoid vague hedging.
+3. Use specific paper names and data when citing claims.
+4. Compare approaches HEAD-TO-HEAD with clear winners declared.
+5. No generic summarization — provide ANALYTICAL DEPTH."""
 
 
 # ── Greeting Handler ─────────────────────────────────────────────────
@@ -141,19 +180,29 @@ def _handle_normal(
     history: list[dict],
     intent: str,
 ) -> str:
-    """Normal mode: retrieve context + single LLM call."""
+    """Normal mode: retrieve context + optional web search + single LLM call."""
     settings = get_settings()
     km = get_key_manager()
 
     history_text = _format_history(history, max_messages=4)
 
-    context = get_context(
+    # Get paper context via vector + graph retrieval
+    paper_context = get_context(
         query=message,
         depth=settings.normal_mode_graph_depth,
         top_k=settings.normal_mode_top_k,
     )
-    if len(context) > 4000:
-        context = context[:4000] + "\n\n[context truncated]"
+    if len(paper_context) > 4000:
+        paper_context = paper_context[:4000] + "\n\n[context truncated]"
+
+    # Retrieval fusion: optionally augment with web search
+    fusion = fuse_retrieval(
+        query=message,
+        paper_context=paper_context,
+        enable_web_search=False,  # Auto-detect based on query
+        paper_count=1,  # Assume papers uploaded in normal mode
+    )
+    context = fusion["fused_context"] or paper_context
 
     # Adjust max_tokens based on intent
     if intent == "simple":
@@ -166,7 +215,7 @@ def _handle_normal(
     user_prompt = f"""Conversation history:
 {history_text}
 
-Research context from papers:
+Research context:
 {context}
 
 Question: {message}
@@ -298,8 +347,10 @@ async def _stream_deep_research(
             "validation_results": [],
             "correction_count": 0,
             "graph_insights": {},
+            "structured_profiles": [],
             "final_report": None,
             "report_markdown": "",
+            "evaluation_metrics": {},
             "errors": [],
         }
 
@@ -470,6 +521,19 @@ def _handle_deep_research_sync(chat_id, message, history):
         if len(ctx) > 1500:
             ctx = ctx[:1500] + "..."
         all_contexts.append(f"Sub-question {i}: {sq}\n\n{ctx}")
+
+    # Augment with web search if query triggers it
+    fusion = fuse_retrieval(
+        query=message,
+        paper_context="",
+        enable_web_search=False,  # Auto-detect
+        paper_count=0,
+    )
+    if fusion["web_activated"] and fusion["web_context"]:
+        web_ctx = fusion["web_context"]
+        if len(web_ctx) > 2000:
+            web_ctx = web_ctx[:2000] + "\n[web results truncated]"
+        all_contexts.append(f"Web-augmented research:\n\n{web_ctx}")
 
     aggregated = "\n\n---\n\n".join(all_contexts)
     if len(aggregated) > 6000:

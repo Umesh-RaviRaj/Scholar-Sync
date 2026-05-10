@@ -35,17 +35,48 @@ Your job is to extract structured knowledge from research paper text based on MU
 You MUST output valid JSON matching this schema:
 {
   "entities": [
-    {"name": "...", "entity_type": "method|dataset|metric|concept|tool|author", "description": "..."}
+    {"name": "...", "entity_type": "method|dataset|metric|concept|tool|framework|embedding|chunking_method|retrieval_method|architecture|benchmark", "description": "..."}
   ],
   "methodology": ["description of method 1", "..."],
-  "findings": ["finding 1", "..."],
+  "findings": ["finding 1 with specific numbers/metrics", "..."],
   "risks": ["risk/limitation 1", "..."],
   "claims": ["claim 1", "..."],
   "supporting_quotes": ["direct quote from text 1", "..."],
   "relationships": [
-    {"source_entity": "...", "target_entity": "...", "relationship_type": "uses|compares_with|improves_upon|based_on|evaluated_on", "description": "..."}
+    {"source_entity": "...", "target_entity": "...", "relationship_type": "USES|IMPROVES|OUTPERFORMS|EVALUATED_ON|CHUNKS_WITH|RETRIEVES_WITH|EMBEDS_WITH|COMPARES_WITH|OPTIMIZES|EXTENDS|LIMITS|BASED_ON|PART_OF", "description": "..."}
   ]
 }
+
+ENTITY EXTRACTION RULES:
+- EXTRACT: methodologies, frameworks, chunking methods, retrieval methods, embedding models, datasets, evaluation metrics, architectures, tools, benchmark systems, algorithms.
+- DO NOT EXTRACT: random hardware specs, email addresses, URLs, author affiliations, page numbers, implementation noise, generic programming languages.
+- Use SPECIFIC entity types: "chunking_method" for chunking approaches, "retrieval_method" for retrieval techniques, "embedding" for embedding models, "framework" for systems/frameworks, "benchmark" for evaluation benchmarks.
+- Normalize names: use the canonical/standard name (e.g., "BM25" not "bm25 algorithm", "FAISS" not "Facebook AI Similarity Search").
+
+RELATIONSHIP EXTRACTION RULES:
+- Use STRONG semantic edge types. Never use generic "relates_to" or "references".
+- USES: X uses Y as a component
+- IMPROVES: X improves upon Y
+- OUTPERFORMS: X achieves better results than Y
+- EVALUATED_ON: method X evaluated on dataset Y
+- CHUNKS_WITH: system uses chunking method Y
+- RETRIEVES_WITH: system uses retrieval method Y
+- EMBEDS_WITH: system uses embedding model Y
+- COMPARES_WITH: X is compared against Y
+- OPTIMIZES: X optimizes aspect Y
+- EXTENDS: X extends/builds upon Y
+- LIMITS: limitation X constrains method Y
+- BASED_ON: X is based on / derived from Y
+- PART_OF: X is a component of system Y
+
+GOOD example entities:
+- {"name": "Semantic Chunking", "entity_type": "chunking_method", "description": "Splits text at semantic boundaries using embedding similarity"}
+- {"name": "BGE-M3", "entity_type": "embedding", "description": "Multi-lingual multi-granularity embedding model"}
+- {"name": "NDCG@10", "entity_type": "metric", "description": "Normalized discounted cumulative gain at rank 10"}
+
+BAD example entities (do NOT extract these):
+- {"name": "NVIDIA A100", "entity_type": "tool", "description": "GPU used for training"}
+- {"name": "Python 3.9", "entity_type": "tool", "description": "Programming language"}
 
 Rules:
 1. Only extract information actually present in the provided text.
@@ -54,6 +85,7 @@ Rules:
 4. Cover ALL requested extraction categories thoroughly.
 5. Always provide entity relationships when entities are mentioned together.
 6. Do NOT hallucinate — only extract what is explicitly stated.
+7. Include SPECIFIC NUMBERS in findings (accuracy, F1, latency, etc.).
 """
 
 
