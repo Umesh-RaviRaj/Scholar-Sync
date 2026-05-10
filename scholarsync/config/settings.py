@@ -79,7 +79,10 @@ class Settings(BaseSettings):
     # ── Reports ─────────────────────────────────────────────────────
     reports_dir: str = "./data/reports"
 
-    # ── MongoDB (Chat Persistence) ──────────────────────────────────
+    # ── Web Search (optional) ────────────────────────────────────────
+    tavily_api_key: str = ""  # Optional: enables Tavily search; falls back to DuckDuckGo
+
+    # ── MongoDB (Chat Persistence) — LEGACY, NOT USED ───────────────
     mongodb_url: str = "mongodb://localhost:27017"
     mongodb_db_name: str = "scholarsync_db"
 

@@ -2270,7 +2270,7 @@
       }
 
       try {
-        const resp = await fetch(API_BASE + '/graph_data');
+        const resp = await fetch(API_BASE + '/graph_data', { credentials: 'same-origin' });
         if (!resp.ok) throw new Error('Failed to fetch graph data');
         const data = await resp.json();
         

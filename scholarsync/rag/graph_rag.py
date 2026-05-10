@@ -32,24 +32,45 @@ logger = get_logger(__name__)
 # Module-level driver cache
 _driver = None
 
-# ── In-memory graph store (works without Neo4j) ──────────────────────
-_memory_nodes: dict[str, dict] = {}   # name -> {name, entity_type, description, source_paper, category, degree}
-_memory_edges: list[dict] = []        # [{source, target, rel_type, description, source_paper}]
-_memory_papers: dict[str, dict] = {}  # paper_id -> {title, authors, year}
+# ── User-scoped in-memory graph store ─────────────────────────────────
+# Each user has isolated graph data to prevent cross-user leakage
+_user_graphs: dict[str, dict] = {}  # user_id -> {nodes: {}, edges: [], papers: {}}
 
 
-def _memory_add_node(name: str, entity_type: str, description: str, source_paper: str) -> None:
-    """Add or update a node in the in-memory graph."""
+def _get_user_graph(user_id: str) -> dict:
+    """Get or create user-scoped graph storage."""
+    if not user_id:
+        user_id = "__global__"  # Fallback for unauthenticated requests
+    if user_id not in _user_graphs:
+        _user_graphs[user_id] = {
+            "nodes": {},    # name -> {name, entity_type, description, source_paper, category, degree, user_id}
+            "edges": [],    # [{source, target, rel_type, description, source_paper, user_id}]
+            "papers": {},   # paper_id -> {title, authors, year, user_id}
+        }
+    return _user_graphs[user_id]
+
+
+def clear_user_graph(user_id: str) -> None:
+    """Clear all graph data for a specific user. Called on new paper upload."""
+    if user_id in _user_graphs:
+        del _user_graphs[user_id]
+        logger.info("Cleared in-memory graph for user: %s", user_id[:8] if user_id else "global")
+
+
+def _memory_add_node(name: str, entity_type: str, description: str, source_paper: str, user_id: str = "") -> None:
+    """Add or update a node in the user-scoped in-memory graph."""
+    graph = _get_user_graph(user_id)
     key = normalize_entity_name(name)
-    existing = _memory_nodes.get(key)
+    existing = graph["nodes"].get(key)
     if existing is None or len(description) > len(existing.get("description", "")):
-        _memory_nodes[key] = {
+        graph["nodes"][key] = {
             "name": name,
             "entity_type": entity_type,
             "description": description,
             "source_paper": source_paper,
             "category": infer_category(Entity(name=name, entity_type=entity_type, description=description)),
             "degree": existing["degree"] if existing else 0,
+            "user_id": user_id,
         }
 
 
@@ -77,24 +98,26 @@ def _compute_edge_weight(rel_type: str, source_paper: str) -> float:
     return base
 
 
-def _memory_add_edge(source: str, target: str, rel_type: str, description: str, source_paper: str) -> None:
-    """Add an edge to the in-memory graph with semantic weighting."""
+def _memory_add_edge(source: str, target: str, rel_type: str, description: str, source_paper: str, user_id: str = "") -> None:
+    """Add an edge to the user-scoped in-memory graph with semantic weighting."""
+    graph = _get_user_graph(user_id)
     weight = _compute_edge_weight(rel_type, source_paper)
-    _memory_edges.append({
+    graph["edges"].append({
         "source": source,
         "target": target,
         "rel_type": rel_type,
         "description": description,
         "source_paper": source_paper,
         "weight": weight,
+        "user_id": user_id,
     })
     # Increment degree for connected nodes
     src_key = normalize_entity_name(source)
     tgt_key = normalize_entity_name(target)
-    if src_key in _memory_nodes:
-        _memory_nodes[src_key]["degree"] = _memory_nodes[src_key].get("degree", 0) + 1
-    if tgt_key in _memory_nodes:
-        _memory_nodes[tgt_key]["degree"] = _memory_nodes[tgt_key].get("degree", 0) + 1
+    if src_key in graph["nodes"]:
+        graph["nodes"][src_key]["degree"] = graph["nodes"][src_key].get("degree", 0) + 1
+    if tgt_key in graph["nodes"]:
+        graph["nodes"][tgt_key]["degree"] = graph["nodes"][tgt_key].get("degree", 0) + 1
 
 
 # Map of semantic relationship types to valid Neo4j relationship type names
@@ -176,11 +199,15 @@ def init_graph_schema():
         logger.info("Graph schema initialised")
 
 
-def add_entities(entities: list[Entity]) -> int:
+def add_entities(entities: list[Entity], user_id: str = "") -> int:
     """
     Add entity nodes to the knowledge graph.
     Merges on name to avoid duplicates.
     Also populates the in-memory graph for fallback visualization.
+    
+    Args:
+        entities: List of entities to add
+        user_id: User ID for graph isolation (required for multi-user)
     """
     if not entities:
         return 0
@@ -188,18 +215,18 @@ def add_entities(entities: list[Entity]) -> int:
     # Normalize and deduplicate before storage
     entities = deduplicate_entities(entities)
 
-    # Always populate in-memory graph
+    # Always populate user-scoped in-memory graph
     for entity in entities:
-        _memory_add_node(entity.name, entity.entity_type, entity.description, entity.source_paper)
+        _memory_add_node(entity.name, entity.entity_type, entity.description, entity.source_paper, user_id)
 
     # Add category nodes for hierarchy
     category_edges = build_category_edges(entities)
     for cat_name in set(infer_category(e) for e in entities):
-        _memory_add_node(cat_name, "category", f"Category: {cat_name}", "")
+        _memory_add_node(cat_name, "category", f"Category: {cat_name}", "", user_id)
     for edge in category_edges:
-        _memory_add_edge(edge.source_entity, edge.target_entity, edge.relationship_type, edge.description, edge.source_paper)
+        _memory_add_edge(edge.source_entity, edge.target_entity, edge.relationship_type, edge.description, edge.source_paper, user_id)
 
-    # Try Neo4j
+    # Try Neo4j with user_id for isolation
     count = len(entities)
     try:
         driver = get_driver()
@@ -207,7 +234,7 @@ def add_entities(entities: list[Entity]) -> int:
             for entity in entities:
                 session.run(
                     """
-                    MERGE (e:Entity {name: $name})
+                    MERGE (e:Entity {name: $name, user_id: $user_id})
                     SET e.entity_type = $entity_type,
                         e.description = $description,
                         e.source_paper = $source_paper,
@@ -218,20 +245,25 @@ def add_entities(entities: list[Entity]) -> int:
                     description=entity.description,
                     source_paper=entity.source_paper,
                     source_chunk_id=entity.source_chunk_id,
+                    user_id=user_id,
                 )
     except Exception as e:
         logger.warning("Neo4j unavailable for add_entities (using in-memory): %s", e)
 
-    logger.info("Added/merged %d entities to graph", count)
+    logger.info("Added/merged %d entities to graph for user %s", count, user_id[:8] if user_id else "global")
     return count
 
 
-def add_relationships(relationships: list[Relationship]) -> int:
+def add_relationships(relationships: list[Relationship], user_id: str = "") -> int:
     """
     Add relationship edges between entities using DYNAMIC Neo4j
     relationship types (USES, IMPROVES_UPON, etc.) instead of a
     generic RELATES_TO for everything.
     Also populates the in-memory graph for fallback visualization.
+    
+    Args:
+        relationships: List of relationships to add
+        user_id: User ID for graph isolation (required for multi-user)
     """
     if not relationships:
         return 0
@@ -239,21 +271,22 @@ def add_relationships(relationships: list[Relationship]) -> int:
     # Normalize and deduplicate
     relationships = deduplicate_relationships(relationships)
 
-    # Always populate in-memory graph
+    # Always populate user-scoped in-memory graph
+    graph = _get_user_graph(user_id)
     for rel in relationships:
         _memory_add_edge(
             rel.source_entity, rel.target_entity,
-            rel.relationship_type, rel.description, rel.source_paper,
+            rel.relationship_type, rel.description, rel.source_paper, user_id,
         )
         # Ensure source/target nodes exist in memory
         src_key = normalize_entity_name(rel.source_entity)
         tgt_key = normalize_entity_name(rel.target_entity)
-        if src_key not in _memory_nodes:
-            _memory_add_node(rel.source_entity, "concept", "", rel.source_paper)
-        if tgt_key not in _memory_nodes:
-            _memory_add_node(rel.target_entity, "concept", "", rel.source_paper)
+        if src_key not in graph["nodes"]:
+            _memory_add_node(rel.source_entity, "concept", "", rel.source_paper, user_id)
+        if tgt_key not in graph["nodes"]:
+            _memory_add_node(rel.target_entity, "concept", "", rel.source_paper, user_id)
 
-    # Try Neo4j
+    # Try Neo4j with user_id for isolation
     count = len(relationships)
     try:
         driver = get_driver()
@@ -262,31 +295,34 @@ def add_relationships(relationships: list[Relationship]) -> int:
                 neo4j_type = _sanitize_rel_type(rel.relationship_type)
                 session.run(
                     f"""
-                    MERGE (a:Entity {{name: $source}})
-                    MERGE (b:Entity {{name: $target}})
+                    MERGE (a:Entity {{name: $source, user_id: $user_id}})
+                    MERGE (b:Entity {{name: $target, user_id: $user_id}})
                     MERGE (a)-[r:{neo4j_type}]->(b)
                     SET r.description = $description,
                         r.source_paper = $source_paper,
-                        r.semantic_type = $semantic_type
+                        r.semantic_type = $semantic_type,
+                        r.user_id = $user_id
                     """,
                     source=rel.source_entity,
                     target=rel.target_entity,
                     description=rel.description,
                     source_paper=rel.source_paper,
                     semantic_type=rel.relationship_type,
+                    user_id=user_id,
                 )
     except Exception as e:
         logger.warning("Neo4j unavailable for add_relationships (using in-memory): %s", e)
 
-    logger.info("Added/merged %d relationships to graph", count)
+    logger.info("Added/merged %d relationships to graph for user %s", count, user_id[:8] if user_id else "global")
     return count
 
 
-def add_paper_node(paper_id: str, title: str, authors: list[str], year: int | None = None):
+def add_paper_node(paper_id: str, title: str, authors: list[str], year: int | None = None, user_id: str = ""):
     """Add a paper reference node and link entities to it."""
-    # Always populate in-memory store
-    _memory_papers[paper_id] = {"title": title, "authors": authors, "year": year}
-    _memory_add_node(title, "Paper", f"Paper: {title}", paper_id)
+    # Always populate user-scoped in-memory store
+    graph = _get_user_graph(user_id)
+    graph["papers"][paper_id] = {"title": title, "authors": authors, "year": year, "user_id": user_id}
+    _memory_add_node(title, "Paper", f"Paper: {title}", paper_id, user_id)
 
     try:
         driver = get_driver()
@@ -385,17 +421,35 @@ def clear_graph():
         session.run("MATCH (n) DETACH DELETE n")
         logger.info("Knowledge graph cleared")
 
-def _get_memory_graph_cytoscape() -> dict:
+def clear_user_graph_neo4j(user_id: str) -> None:
+    """Clear all Neo4j graph data for a specific user."""
+    if not user_id:
+        return
+    try:
+        driver = get_driver()
+        with driver.session() as session:
+            # Delete all nodes and relationships for this user
+            session.run(
+                "MATCH (n {user_id: $user_id}) DETACH DELETE n",
+                user_id=user_id,
+            )
+            logger.info("Cleared Neo4j graph for user: %s", user_id[:8])
+    except Exception as e:
+        logger.warning("Could not clear Neo4j graph for user (non-fatal): %s", e)
+
+
+def _get_memory_graph_cytoscape(user_id: str = "") -> dict:
     """
-    Build Cytoscape JSON from the in-memory graph store.
+    Build Cytoscape JSON from the user-scoped in-memory graph store.
     Used as fallback when Neo4j is unavailable.
     """
+    graph = _get_user_graph(user_id)
     nodes = []
     edges = []
     node_id_map: dict[str, str] = {}  # normalized_name -> id
 
-    # Build nodes
-    for idx, (key, node_data) in enumerate(_memory_nodes.items()):
+    # Build nodes from user's graph
+    for idx, (key, node_data) in enumerate(graph["nodes"].items()):
         node_id = f"mem_{idx}"
         node_id_map[key] = node_id
         name = node_data["name"]
@@ -417,8 +471,8 @@ def _get_memory_graph_cytoscape() -> dict:
             }
         })
 
-    # Build edges
-    for idx, edge_data in enumerate(_memory_edges):
+    # Build edges from user's graph
+    for idx, edge_data in enumerate(graph["edges"]):
         src_key = normalize_entity_name(edge_data["source"])
         tgt_key = normalize_entity_name(edge_data["target"])
         src_id = node_id_map.get(src_key)
@@ -452,11 +506,16 @@ def _get_memory_graph_cytoscape() -> dict:
     return {"nodes": connected_nodes, "edges": edges}
 
 
-def get_full_graph_data_cytoscape() -> dict:
+def get_full_graph_data_cytoscape(user_id: str = "") -> dict:
     """
     Retrieve graph data and export in Cytoscape JSON format.
+    
+    Args:
+        user_id: User ID for filtering — returns only this user's graph data.
+                 If empty, returns empty graph (no cross-user leakage).
 
     IMPROVED:
+      - User-scoped graph isolation (multi-user safe)
       - Tries Neo4j first; falls back to in-memory graph
       - Edge labels use semantic_type property (not generic Neo4j type)
       - Edge descriptions included for tooltips
@@ -465,7 +524,12 @@ def get_full_graph_data_cytoscape() -> dict:
       - Node degree included for sizing
       - Category nodes for hierarchical structure
     """
-    # Try Neo4j first
+    # If no user_id provided, return empty graph (safe default)
+    if not user_id:
+        logger.warning("get_full_graph_data_cytoscape called without user_id — returning empty graph")
+        return {"nodes": [], "edges": []}
+    
+    # Try Neo4j first with user filtering
     try:
         driver = get_driver()
         driver.verify_connectivity()
@@ -474,12 +538,14 @@ def get_full_graph_data_cytoscape() -> dict:
         edges = []
 
         with driver.session() as session:
+            # CRITICAL: Filter by user_id to prevent cross-user leakage
             result = session.run(
                 """
-                MATCH (n)-[r]->(m)
+                MATCH (n {user_id: $user_id})-[r]->(m {user_id: $user_id})
                 RETURN n, r, m, type(r) AS rel_type
                 LIMIT 1000
-                """
+                """,
+                user_id=user_id,
             )
             connected_node_ids = set()
 
@@ -569,10 +635,10 @@ def get_full_graph_data_cytoscape() -> dict:
         if connected_nodes:
             return {"nodes": connected_nodes, "edges": edges}
 
-        # Neo4j connected but empty — try in-memory
-        logger.info("Neo4j graph empty, using in-memory graph")
-        return _get_memory_graph_cytoscape()
+        # Neo4j connected but empty for this user — try in-memory
+        logger.info("Neo4j graph empty for user %s, using in-memory graph", user_id[:8])
+        return _get_memory_graph_cytoscape(user_id)
 
     except Exception as e:
-        logger.info("Neo4j unavailable (%s) — using in-memory graph", e)
-        return _get_memory_graph_cytoscape()
+        logger.info("Neo4j unavailable (%s) — using in-memory graph for user %s", e, user_id[:8] if user_id else "unknown")
+        return _get_memory_graph_cytoscape(user_id)

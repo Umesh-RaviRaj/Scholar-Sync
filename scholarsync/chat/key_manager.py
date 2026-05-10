@@ -50,8 +50,35 @@ class _KeyState:
 
     def client(self) -> Groq:
         if self._client is None:
-            self._client = Groq(api_key=self.key)
+            if self.key.startswith("sk-or-"):
+                # OpenRouter base URL
+                self._client = Groq(api_key=self.key, base_url="https://openrouter.ai")
+                
+                # Monkey-patch to fix Groq's hardcoded path
+                original_post = self._client.chat.completions._post
+                def _patched_post(path, *args, **kwargs):
+                    if path == "/openai/v1/chat/completions":
+                        path = "/api/v1/chat/completions"
+                    return original_post(path, *args, **kwargs)
+                self._client.chat.completions._post = _patched_post
+            else:
+                self._client = Groq(api_key=self.key)
         return self._client
+
+    def map_model(self, model_name: str) -> str:
+        """Map Groq model names to OpenRouter equivalents if needed."""
+        if not self.key.startswith("sk-or-"):
+            return model_name
+        
+        m = model_name.lower()
+        if "llama-3.3-70b" in m: return "meta-llama/llama-3.3-70b-instruct"
+        if "llama-3.1-70b" in m: return "meta-llama/llama-3.1-70b-instruct"
+        if "llama-3.1-8b" in m:  return "meta-llama/llama-3.1-8b-instruct"
+        if "llama3-70b" in m:    return "meta-llama/llama-3-70b-instruct"
+        if "llama3-8b" in m:     return "meta-llama/llama-3-8b-instruct"
+        if "mixtral" in m:       return "mistralai/mixtral-8x7b-instruct"
+        if "gemma" in m:         return "google/gemma-7b-it"
+        return "meta-llama/llama-3.3-70b-instruct"  # Fallback
 
     @property
     def is_active(self) -> bool:
@@ -260,7 +287,7 @@ class KeyManager:
             # ── Fire the request ─────────────────────────────────
             try:
                 kwargs: dict[str, Any] = {
-                    "model": _model,
+                    "model": ks.map_model(_model),
                     "messages": messages,
                     "temperature": _temp,
                     "max_tokens": _toks,
@@ -270,6 +297,20 @@ class KeyManager:
 
                 response = ks.client().chat.completions.create(**kwargs)
                 text = response.choices[0].message.content.strip()
+                
+                # Robust JSON extraction: some models wrap JSON in markdown or add conversational text
+                if response_format and response_format.get("type") == "json_object":
+                    text = text.strip()
+                    first_brace = text.find("{")
+                    first_bracket = text.find("[")
+                    first_idx = min(first_brace, first_bracket) if first_brace != -1 and first_bracket != -1 else max(first_brace, first_bracket)
+                    
+                    last_brace = text.rfind("}")
+                    last_bracket = text.rfind("]")
+                    last_idx = max(last_brace, last_bracket)
+                    
+                    if first_idx != -1 and last_idx != -1 and last_idx > first_idx:
+                        text = text[first_idx : last_idx + 1]
 
                 # Track usage
                 usage = getattr(response, "usage", None)
@@ -352,7 +393,7 @@ class KeyManager:
 
             try:
                 stream = ks.client().chat.completions.create(
-                    model=_model,
+                    model=ks.map_model(_model),
                     messages=messages,
                     temperature=_temp,
                     max_tokens=_toks,

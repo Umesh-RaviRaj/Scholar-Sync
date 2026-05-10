@@ -57,6 +57,9 @@ class GraphState(TypedDict):
     paper_metadata: list[dict]
     status: str
     progress_messages: list[str]
+    
+    # User ID for multi-user graph isolation
+    user_id: str
 
     # Manager output
     subtasks: list[dict]
@@ -187,18 +190,21 @@ def graph_rag_node(state: GraphState) -> GraphState:
     state["status"] = PipelineStatus.BUILDING_GRAPH.value
     state["progress_messages"].append("🔗 GraphRAG: Building knowledge graph...")
 
+    # Get user_id for multi-user graph isolation
+    user_id = state.get("user_id", "")
+
     try:
         extractions = [ExtractedKnowledge(**ext) for ext in state["extractions"]]
         paper_metadata = [PaperMetadata(**p) for p in state["paper_metadata"]]
 
-        # Add paper nodes
+        # Add paper nodes with user_id for isolation
         for meta in paper_metadata:
             try:
-                add_paper_node(meta.paper_id, meta.title, meta.authors, meta.year)
+                add_paper_node(meta.paper_id, meta.title, meta.authors, meta.year, user_id=user_id)
             except Exception as e:
                 logger.warning("Could not add paper node %s: %s", meta.paper_id, e)
 
-        # Add entities and relationships from extractions
+        # Add entities and relationships from extractions with user_id
         all_entities = []
         all_relationships = []
         for ext in extractions:
@@ -206,8 +212,8 @@ def graph_rag_node(state: GraphState) -> GraphState:
             all_relationships.extend(ext.relationships)
 
         try:
-            entity_count = add_entities(all_entities)
-            rel_count = add_relationships(all_relationships)
+            entity_count = add_entities(all_entities, user_id=user_id)
+            rel_count = add_relationships(all_relationships, user_id=user_id)
         except Exception as e:
             logger.warning("Graph storage error (Neo4j may not be available): %s", e)
             entity_count = len(all_entities)
@@ -594,13 +600,20 @@ def run_pipeline(
     session_id: str,
     query: str,
     paper_metadata: list[PaperMetadata],
+    user_id: str = "",
 ) -> GraphState:
     """
     Execute the full pipeline synchronously.
 
+    Args:
+        session_id: Unique session identifier
+        query: Research query
+        paper_metadata: List of paper metadata
+        user_id: User ID for multi-user graph isolation
+    
     Returns the final state.
     """
-    logger.info("Starting pipeline for session %s: '%s'", session_id, query)
+    logger.info("Starting pipeline for session %s (user %s): '%s'", session_id, user_id[:8] if user_id else "anon", query)
 
     # Initialize pipeline budget
     from scholarsync.chat.llm_cache import get_pipeline_budget, clear_pipeline_budget
@@ -612,13 +625,14 @@ def run_pipeline(
     workflow = build_pipeline()
     app = workflow.compile()
 
-    # Initial state
+    # Initial state with user_id for graph isolation
     initial_state: GraphState = {
         "session_id": session_id,
         "query": query,
         "paper_metadata": [p.model_dump() for p in paper_metadata],
         "status": PipelineStatus.PENDING.value,
         "progress_messages": ["🚀 Pipeline started!"],
+        "user_id": user_id,
         "subtasks": [],
         "extractions": [],
         "validation_results": [],
