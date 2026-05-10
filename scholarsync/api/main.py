@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
@@ -40,7 +40,7 @@ from scholarsync.rag.vector_store import add_chunks, reset_collection
 from scholarsync.workflow.langgraph_pipeline import run_pipeline
 
 # Auth module (local username/password + user chat)
-from scholarsync.auth.router import router as auth_router
+from scholarsync.auth.router import router as auth_router, get_current_user_local
 from scholarsync.auth.chat_router import router as user_chat_router
 from scholarsync.auth.database import init_auth_db
 
@@ -157,6 +157,7 @@ async def key_stats():
 
 @app.post("/upload_papers", response_model=UploadResponse)
 async def upload_papers(
+    request: Request,
     files: list[UploadFile] = File(...),
     session_id: str | None = Form(None),
 ):
@@ -164,9 +165,28 @@ async def upload_papers(
     Upload research papers (PDFs) for processing.
 
     Parses each PDF, chunks the text, and indexes into the vector store.
+    IMPORTANT: Clears user's old graph data to ensure fresh graph on new uploads.
     """
     if not session_id:
         session_id = uuid.uuid4().hex[:16]
+
+    # Extract user_id for graph isolation
+    user_id = ""
+    try:
+        user = await get_current_user_local(request)
+        user_id = str(user.get("id", ""))
+    except Exception:
+        logger.warning("Upload without auth — graph will use global scope")
+    
+    # Clear user's old graph data to ensure fresh graph on new uploads
+    if user_id:
+        try:
+            from scholarsync.rag.graph_rag import clear_user_graph, clear_user_graph_neo4j
+            clear_user_graph(user_id)
+            clear_user_graph_neo4j(user_id)
+            logger.info("Cleared old graph data for user %s before new upload", user_id[:8])
+        except Exception as e:
+            logger.warning("Could not clear old graph (non-fatal): %s", e)
 
     if len(files) > settings.max_papers:
         raise HTTPException(
@@ -222,11 +242,12 @@ async def upload_papers(
     if not paper_metadata_list:
         raise HTTPException(status_code=400, detail="No valid PDF files uploaded")
 
-    # Store session data
+    # Store session data with user_id for pipeline
     sessions[session_id] = {
         "paper_metadata": paper_metadata_list,
         "status": PipelineStatus.PENDING,
         "pipeline_state": None,
+        "user_id": user_id,  # Store for pipeline use
     }
 
     return UploadResponse(
@@ -239,11 +260,11 @@ async def upload_papers(
 
 # ── Query — Start Pipeline ─────────────────────────────────────────
 
-def _run_pipeline_bg(session_id: str, query: str, paper_metadata: list[PaperMetadata]):
+def _run_pipeline_bg(session_id: str, query: str, paper_metadata: list[PaperMetadata], user_id: str = ""):
     """Background task to run the pipeline."""
     try:
         sessions[session_id]["status"] = PipelineStatus.PLANNING
-        final_state = run_pipeline(session_id, query, paper_metadata)
+        final_state = run_pipeline(session_id, query, paper_metadata, user_id=user_id)
         sessions[session_id]["pipeline_state"] = final_state
         sessions[session_id]["status"] = PipelineStatus(final_state.get("status", "completed"))
     except Exception as e:
@@ -268,13 +289,15 @@ async def start_query(request: QueryRequest, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=404, detail="Session not found. Upload papers first.")
 
     paper_metadata = session["paper_metadata"]
+    user_id = session.get("user_id", "")  # Get user_id stored during upload
 
-    # Start pipeline in background
+    # Start pipeline in background with user_id for graph isolation
     background_tasks.add_task(
         _run_pipeline_bg,
         request.session_id,
         request.query,
         paper_metadata,
+        user_id,
     )
 
     sessions[request.session_id]["status"] = PipelineStatus.INGESTING
@@ -321,15 +344,32 @@ async def get_report(session_id: str):
 
 # ── Graph Visualization ───────────────────────────────────────────────
 
+from fastapi import Request, Depends
+from scholarsync.auth.router import get_current_user_local
+
 @app.get("/graph_data")
-async def get_graph_data():
-    """Returns the full knowledge graph in Cytoscape.js JSON format."""
+async def get_graph_data(request: Request):
+    """
+    Returns the knowledge graph in Cytoscape.js JSON format.
+    IMPORTANT: User-scoped — only returns graph data for the authenticated user.
+    """
     from scholarsync.rag.graph_rag import get_full_graph_data_cytoscape
+    
+    # Extract user_id from JWT cookie for graph isolation
+    user_id = ""
     try:
-        data = get_full_graph_data_cytoscape()
+        user = await get_current_user_local(request)
+        user_id = str(user.get("id", ""))
+    except Exception:
+        # If not authenticated, return empty graph (safe default)
+        logger.warning("Graph data requested without valid auth — returning empty graph")
+        return {"nodes": [], "edges": []}
+    
+    try:
+        data = get_full_graph_data_cytoscape(user_id=user_id)
         return data
     except Exception as e:
-        logger.error("Failed to get graph data: %s", e)
+        logger.error("Failed to get graph data for user %s: %s", user_id[:8] if user_id else "unknown", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -422,6 +462,7 @@ class AskRequest(BaseModel):
     session_id: str
     query: str
     deep_research: bool = False
+    enable_web_search: bool = False  # Manual web search toggle
     history: list[dict] = []  # [{role, content}, ...]
 
 class AskResponse(BaseModel):
@@ -429,6 +470,7 @@ class AskResponse(BaseModel):
     session_id: str
     response: str
     mode: str
+    web_search_used: bool = False  # Indicates if web search was used
 
 @app.post("/ask", response_model=AskResponse)
 async def ask_question(request: AskRequest):
