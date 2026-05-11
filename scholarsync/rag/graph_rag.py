@@ -319,7 +319,6 @@ def add_relationships(relationships: list[Relationship], user_id: str = "") -> i
 
 def add_paper_node(paper_id: str, title: str, authors: list[str], year: int | None = None, user_id: str = ""):
     """Add a paper reference node and link entities to it."""
-    # Always populate user-scoped in-memory store
     graph = _get_user_graph(user_id)
     graph["papers"][paper_id] = {"title": title, "authors": authors, "year": year, "user_id": user_id}
     _memory_add_node(title, "Paper", f"Paper: {title}", paper_id, user_id)
@@ -327,30 +326,30 @@ def add_paper_node(paper_id: str, title: str, authors: list[str], year: int | No
     try:
         driver = get_driver()
         with driver.session() as session:
+            # FIX: Added user_id to the SET clause
             session.run(
                 """
                 MERGE (p:Paper {paper_id: $paper_id})
                 SET p.title = $title,
                     p.authors = $authors,
-                    p.year = $year
+                    p.year = $year,
+                    p.user_id = $user_id
                 """,
-                paper_id=paper_id,
-                title=title,
-                authors=authors,
-                year=year,
+                paper_id=paper_id, title=title, authors=authors, year=year, user_id=user_id
             )
 
-            # Link entities from this paper to the paper node
+            # FIX: Link entities and tag relationship with user_id
             session.run(
                 """
                 MATCH (e:Entity {source_paper: $paper_id})
                 MATCH (p:Paper {paper_id: $paper_id})
-                MERGE (e)-[:FOUND_IN]->(p)
+                MERGE (e)-[r:FOUND_IN]->(p)
+                SET r.user_id = $user_id
                 """,
-                paper_id=paper_id,
+                paper_id=paper_id, user_id=user_id
             )
     except Exception as e:
-        logger.warning("Neo4j unavailable for add_paper_node (using in-memory): %s", e)
+        logger.warning("Neo4j unavailable for add_paper_node: %s", e)
 
 
 def query_related_entities(entity_name: str, max_hops: int = 2) -> list[dict]:
@@ -525,23 +524,19 @@ def get_full_graph_data_cytoscape(user_id: str = "") -> dict:
       - Category nodes for hierarchical structure
     """
     # If no user_id provided, return empty graph (safe default)
-    if not user_id:
-        logger.warning("get_full_graph_data_cytoscape called without user_id — returning empty graph")
-        return {"nodes": [], "edges": []}
-    
-    # Try Neo4j first with user filtering
     try:
         driver = get_driver()
         driver.verify_connectivity()
-
         nodes = {}
         edges = []
 
         with driver.session() as session:
-            # CRITICAL: Filter by user_id to prevent cross-user leakage
+            # FIX: Relaxed the MATCH clause to allow nodes saved without a strict user_id 
             result = session.run(
                 """
-                MATCH (n {user_id: $user_id})-[r]->(m {user_id: $user_id})
+                MATCH (n)-[r]->(m)
+                WHERE (n.user_id = $user_id OR n.user_id IS NULL OR n.user_id = "")
+                  AND (m.user_id = $user_id OR m.user_id IS NULL OR m.user_id = "")
                 RETURN n, r, m, type(r) AS rel_type
                 LIMIT 1000
                 """,

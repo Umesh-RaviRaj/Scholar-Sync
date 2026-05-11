@@ -463,6 +463,7 @@ class AskRequest(BaseModel):
     query: str
     deep_research: bool = False
     enable_web_search: bool = False  # Manual web search toggle
+    custom_search_prompt: str = ""   # Custom instructions for web search
     history: list[dict] = []  # [{role, content}, ...]
 
 class AskResponse(BaseModel):
@@ -470,7 +471,8 @@ class AskResponse(BaseModel):
     session_id: str
     response: str
     mode: str
-    web_search_used: bool = False  # Indicates if web search was used
+    web_search_used: bool = False      # Indicates if web search was used
+    search_provider: str = ""          # "tavily", "duckduckgo", or ""
 
 @app.post("/ask", response_model=AskResponse)
 async def ask_question(request: AskRequest):
@@ -514,10 +516,18 @@ async def ask_stream(request: AskRequest):
     """
     SSE streaming endpoint — streams tokens as they arrive from the LLM.
     Uses Server-Sent Events format.
+    
+    Supports:
+    - Normal mode (fast, local RAG only)
+    - Deep research mode (multi-agent pipeline)
+    - Optional web search (only when explicitly enabled)
     """
     from scholarsync.chat.mode_router import route_message_stream
 
-    logger.info("Stream endpoint: session=%s, deep=%s", request.session_id, request.deep_research)
+    logger.info(
+        "Stream endpoint: session=%s, deep=%s, web_search=%s",
+        request.session_id, request.deep_research, request.enable_web_search
+    )
 
     async def event_generator():
         try:
@@ -526,6 +536,8 @@ async def ask_stream(request: AskRequest):
                 message=request.query,
                 history=request.history,
                 deep_research=request.deep_research,
+                enable_web_search=request.enable_web_search,
+                custom_search_prompt=request.custom_search_prompt,
             ):
                 evt_type = event.get("event", "token")
                 data = event.get("data", "")

@@ -290,6 +290,93 @@ Question: {message}
     )
 
 
+def _stream_normal_with_web(
+    chat_id: str,
+    message: str,
+    history: list[dict],
+    intent: str,
+    enable_web_search: bool = False,
+    custom_search_prompt: str = "",
+):
+    """
+    Stream a normal mode response with optional web search augmentation.
+    
+    Web search is ONLY performed when explicitly enabled by the user.
+    This keeps normal responses fast and lightweight.
+    """
+    settings = get_settings()
+    km = get_key_manager()
+
+    history_text = _format_history(history, max_messages=4)
+    
+    # Get paper context via vector + graph retrieval
+    paper_context = get_context(
+        query=message,
+        depth=settings.normal_mode_graph_depth,
+        top_k=settings.normal_mode_top_k,
+    )
+    if len(paper_context) > 4000:
+        paper_context = paper_context[:4000] + "\n\n[context truncated]"
+
+    # Web search augmentation — ONLY if explicitly enabled
+    web_context = ""
+    search_provider = ""
+    if enable_web_search:
+        try:
+            from scholarsync.research.web_search import web_search, format_web_results_for_context
+            logger.info("Web search enabled for normal mode query")
+            response = web_search(
+                message,
+                max_results=6,
+                custom_search_prompt=custom_search_prompt,
+            )
+            if response.results:
+                web_context = format_web_results_for_context(response)
+                search_provider = response.search_engine
+                logger.info("Web search returned %d results via %s", len(response.results), search_provider)
+        except Exception as e:
+            logger.warning("Web search failed (continuing without): %s", e)
+
+    # Combine contexts
+    if web_context:
+        context = f"{paper_context}\n\n{web_context}"
+    else:
+        context = paper_context
+
+    if len(context) > 6000:
+        context = context[:6000] + "\n\n[context truncated]"
+
+    if intent == "simple":
+        length_hint = "Answer concisely in 2-4 sentences."
+        max_tok = 512
+    else:
+        length_hint = "Give a clear, structured answer. Be thorough but avoid unnecessary padding."
+        max_tok = 2048
+
+    # Add source indicator to prompt
+    source_note = ""
+    if web_context:
+        source_note = f"\n\nNote: This response uses both uploaded papers AND web search results (via {search_provider})."
+    
+    user_prompt = f"""Conversation history:
+{history_text}
+
+Research context:
+{context}
+
+Question: {message}
+
+{length_hint}{source_note}"""
+
+    return km.call_llm_stream(
+        messages=[
+            {"role": "system", "content": NORMAL_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+        max_tokens=max_tok,
+    )
+
+
 import queue
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -306,6 +393,8 @@ async def _stream_deep_research(
     chat_id: str,
     message: str,
     history: list[dict],
+    enable_web_search: bool = False,
+    custom_search_prompt: str = "",
 ):
     """
     Deep research streaming endpoint.
@@ -314,8 +403,41 @@ async def _stream_deep_research(
     the in-memory session store). Falls back to the LLM-based deep research
     approach that queries ChromaDB directly (works even after server restart
     since ChromaDB is persisted on disk).
+    
+    Args:
+        chat_id: Session/chat ID
+        message: User query
+        history: Conversation history
+        enable_web_search: Enable web search augmentation for deep research
+        custom_search_prompt: Custom instructions for web search
     """
     from scholarsync.utils.schemas import PipelineStatus
+
+    # Perform web search if enabled (ONLY when explicitly requested)
+    web_search_results = None
+    search_provider = ""
+    if enable_web_search:
+        yield {"event": "progress", "data": "🌐 Performing web search..."}
+        try:
+            from scholarsync.research.web_search import web_search, format_web_results_for_context
+            web_response = web_search(
+                message,
+                max_results=8,
+                custom_search_prompt=custom_search_prompt,
+            )
+            if web_response.results:
+                web_search_results = format_web_results_for_context(web_response)
+                search_provider = web_response.search_engine
+                yield {
+                    "event": "web_search_status",
+                    "data": f"Found {len(web_response.results)} web results via {search_provider}"
+                }
+                logger.info("Deep research web search: %d results via %s", len(web_response.results), search_provider)
+            else:
+                yield {"event": "progress", "data": "⚠️ No web results found, continuing with papers only"}
+        except Exception as e:
+            logger.warning("Web search failed in deep research: %s", e)
+            yield {"event": "progress", "data": f"⚠️ Web search unavailable: {str(e)[:50]}"}
 
     # Try to get paper metadata from the in-memory session store
     session = None
@@ -336,12 +458,16 @@ async def _stream_deep_research(
         q = queue.Queue()
         THOUGHT_QUEUES[chat_id] = q
 
+        # Get user_id for graph isolation
+        user_id = session.get("user_id", "")
+
         initial_state = {
             "session_id": chat_id,
             "query": message,
             "paper_metadata": [p.model_dump() for p in session["paper_metadata"]],
             "status": PipelineStatus.PENDING.value,
             "progress_messages": ["🚀 Multi-Agent Pipeline initialized..."],
+            "user_id": user_id,
             "subtasks": [],
             "extractions": [],
             "validation_results": [],
@@ -352,6 +478,10 @@ async def _stream_deep_research(
             "report_markdown": "",
             "evaluation_metrics": {},
             "errors": [],
+            # Pass web search results to pipeline
+            "web_search_context": web_search_results or "",
+            "web_search_provider": search_provider,
+            "enable_web_search": enable_web_search,
         }
 
         app = build_pipeline().compile()
@@ -400,6 +530,12 @@ async def _stream_deep_research(
             for i in range(0, len(report_md), chunk_size):
                 yield {"event": "token", "data": report_md[i:i+chunk_size]}
                 await asyncio.sleep(0.01)
+            
+            # Send evaluation metrics as a separate event
+            evaluation_metrics = final_state.get("evaluation_metrics", {})
+            if evaluation_metrics:
+                yield {"event": "evaluation_metrics", "data": evaluation_metrics}
+                logger.info("Sent evaluation metrics to frontend")
         else:
             errs = final_state.get("errors", [])
             yield {"event": "error", "data": "Pipeline failed: " + ", ".join(errs)}
@@ -565,13 +701,26 @@ async def route_message_stream(
     message: str,
     history: list[dict],
     deep_research: bool = False,
+    enable_web_search: bool = False,
+    custom_search_prompt: str = "",
 ) -> AsyncGenerator[dict, None]:
     """
     Streaming route — yields dicts with 'event' and 'data' keys.
-    Events: 'progress', 'token', 'done'
+    Events: 'progress', 'token', 'done', 'web_search_status'
+    
+    Args:
+        chat_id: Session/chat ID
+        message: User message
+        history: Conversation history
+        deep_research: Enable deep research mode
+        enable_web_search: Enable web search augmentation
+        custom_search_prompt: Custom instructions for web search
     """
     intent = classify_intent(message)
-    logger.info("ModeRouter[stream]: chat=%s mode=%s intent=%s", chat_id, "DEEP" if deep_research else "NORMAL", intent)
+    logger.info(
+        "ModeRouter[stream]: chat=%s mode=%s intent=%s web_search=%s",
+        chat_id, "DEEP" if deep_research else "NORMAL", intent, enable_web_search
+    )
 
     loop = asyncio.get_event_loop()
 
@@ -583,13 +732,19 @@ async def route_message_stream(
         return
 
     if deep_research:
-        gen = _stream_deep_research(chat_id, message, history)
+        gen = _stream_deep_research(
+            chat_id, message, history,
+            enable_web_search=enable_web_search,
+            custom_search_prompt=custom_search_prompt,
+        )
         async for event in gen:
             yield event
         return
 
+    # Normal mode with optional web search
     stream = await loop.run_in_executor(
-        None, _stream_normal, chat_id, message, history, intent,
+        None, _stream_normal_with_web, chat_id, message, history, intent,
+        enable_web_search, custom_search_prompt,
     )
     for chunk in stream:
         yield {"event": "token", "data": chunk}

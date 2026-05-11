@@ -195,9 +195,18 @@ def _search_duckduckgo(query: str, max_results: int = 10) -> list[WebSearchResul
 # ── Tavily Search Backend (higher quality, needs API key) ────────────────
 
 def _search_tavily(query: str, max_results: int = 10) -> list[WebSearchResult]:
-    """Search using Tavily API (requires TAVILY_API_KEY env variable)."""
+    """Search using Tavily API (requires TAVILY_API_KEY env variable or settings)."""
+    # Check environment variable first, then settings
     api_key = os.environ.get("TAVILY_API_KEY", "")
     if not api_key:
+        try:
+            from scholarsync.config.settings import get_settings
+            api_key = get_settings().tavily_api_key
+        except Exception:
+            pass
+    
+    if not api_key:
+        logger.debug("No Tavily API key found — will use DuckDuckGo fallback")
         return []
     
     try:
@@ -244,6 +253,7 @@ def web_search(
     query: str,
     max_results: int = 8,
     prefer_trusted: bool = True,
+    custom_search_prompt: str = "",
 ) -> WebSearchResponse:
     """
     Perform web search for research augmentation.
@@ -255,11 +265,18 @@ def web_search(
         query: Research query to search for
         max_results: Maximum number of results to return
         prefer_trusted: If True, prioritize trusted academic sources
+        custom_search_prompt: Optional custom instructions to append to search
+            Examples: "Search only academic papers", "Prioritize recent sources",
+            "Search for implementation examples", "Search Reddit and GitHub"
     
     Returns:
         WebSearchResponse with scored and filtered results
     """
+    # Build research query with optional custom prompt
     research_query = _build_research_query(query)
+    if custom_search_prompt:
+        research_query = f"{research_query} {custom_search_prompt}"
+        logger.info("Custom search prompt applied: %s", custom_search_prompt)
     logger.info("Web search: '%s' (enhanced: '%s')", query, research_query)
     
     # Try Tavily first (higher quality), fall back to DuckDuckGo

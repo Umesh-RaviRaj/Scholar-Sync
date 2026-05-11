@@ -36,13 +36,13 @@ For each claim, finding, or extraction provided, you must:
 
 You MUST output valid JSON with this structure:
 {
-  "overall_score": 0.85,
+  "overall_score": 0.34,
   "is_valid": true,
   "claim_validations": [
     {
       "claim": "the specific claim text",
       "is_grounded": true,
-      "confidence": 0.9,
+      "confidence": 0.45,
       "supporting_evidence": ["quote from source that supports this"],
       "issues": []
     }

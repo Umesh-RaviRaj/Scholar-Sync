@@ -468,6 +468,58 @@
       display: block;
     }
 
+    .mode-divider {
+      height: 1px;
+      background: #e5e7eb;
+      margin: 6px 0;
+    }
+
+    .mode-option .opt-subtitle {
+      font-size: 10px;
+      color: #9ca3af;
+      margin-top: 1px;
+    }
+
+    .mode-option.websearch-on .opt-subtitle {
+      color: var(--accent);
+    }
+
+    .mode-option.websearch-on {
+      background: var(--accent-glow);
+    }
+
+    /* Web search indicator pill */
+    #websearch-pill {
+      display: none;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 10px;
+      background: var(--accent-glow);
+      border: 1px solid var(--accent);
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--accent);
+      margin-left: 8px;
+    }
+
+    #websearch-pill.visible {
+      display: flex;
+    }
+
+    #websearch-pill button {
+      background: none;
+      border: none;
+      padding: 0;
+      cursor: pointer;
+      display: flex;
+      color: var(--accent);
+    }
+
+    #websearch-pill button:hover {
+      color: #1d4ed8;
+    }
+
     /* ─── Messages Container ─── */
     #messages-container {
       flex: 1;
@@ -748,16 +800,22 @@
     .graph-modal {
       display: none;
       position: fixed;
-      top: 0; left: 0; width: 100vw; height: 100vh;
-      background: rgba(15, 15, 26, 0.85); /* backdrop */
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background: rgba(15, 15, 26, 0.85);
+      /* backdrop */
       z-index: 1000;
       backdrop-filter: blur(4px);
       align-items: center;
       justify-content: center;
     }
+
     .graph-modal.visible {
       display: flex;
     }
+
     .graph-modal-content {
       width: 90vw;
       height: 90vh;
@@ -769,6 +827,7 @@
       overflow: hidden;
       border: 1px solid var(--border);
     }
+
     .graph-modal-header {
       padding: 16px 24px;
       border-bottom: 1px solid var(--border);
@@ -778,6 +837,7 @@
       background: var(--main-bg);
       color: var(--text-primary);
     }
+
     .graph-modal-header .close-btn {
       background: transparent;
       border: none;
@@ -785,9 +845,11 @@
       cursor: pointer;
       color: var(--text-secondary);
     }
+
     .graph-modal-header .close-btn:hover {
       color: var(--danger);
     }
+
     .cy-container {
       flex: 1;
       width: 100%;
@@ -1326,7 +1388,8 @@
         </div>
         <button class="sidebar-logout-btn" onclick="handleLogout()" title="Sign out">
           <svg fill="none" viewBox="0 0 24 24" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15m3 0l3-3m0 0l-3-3m3 3H9"/>
+            <path stroke-linecap="round" stroke-linejoin="round"
+              d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15m3 0l3-3m0 0l-3-3m3 3H9" />
           </svg>
         </button>
       </div>
@@ -1352,9 +1415,11 @@
           </div>
         </div>
         <div class="chat-header-actions">
-          <button class="header-icon-btn" title="View Knowledge Graph" onclick="openGraphModal()" style="display:flex; align-items:center; gap:4px; font-size:12px; font-weight:600; padding:4px 10px; border-radius:6px; background:var(--accent-glow); color:var(--accent); border:none;">
+          <button class="header-icon-btn" title="View Knowledge Graph" onclick="openGraphModal()"
+            style="display:flex; align-items:center; gap:4px; font-size:12px; font-weight:600; padding:4px 10px; border-radius:6px; background:var(--accent-glow); color:var(--accent); border:none;">
             <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
             </svg>
             Graph
           </button>
@@ -1428,6 +1493,17 @@
                   <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
                 </svg>
               </button>
+              <div class="mode-divider"></div>
+              <button class="mode-option" id="opt-websearch" onclick="toggleWebSearch()">
+                <span class="opt-icon">🌐</span>
+                <div class="opt-text">
+                  <span class="opt-title">Web Search</span>
+                  <span class="opt-subtitle" id="websearch-status">OFF — Papers only</span>
+                </div>
+                <svg class="opt-check" fill="none" viewBox="0 0 24 24" stroke-width="2.5">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+                </svg>
+              </button>
             </div>
           </div>
 
@@ -1439,6 +1515,16 @@
             <span id="mode-pill-label">Deep research</span>
             <button onclick="selectMode('normal')" title="Remove" aria-label="Clear mode">
               <svg fill="none" viewBox="0 0 24 24" stroke-width="2.5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          <div id="websearch-pill">
+            <span>🌐</span>
+            <span id="websearch-pill-label">Web Search</span>
+            <button onclick="toggleWebSearch()" title="Disable web search" aria-label="Disable web search">
+              <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke-width="2.5">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
@@ -1466,7 +1552,8 @@
       <div class="graph-modal-header">
         <h3 style="display:flex; align-items:center; gap:8px;">
           <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
           </svg>
           Knowledge Graph
         </h3>
@@ -1499,6 +1586,10 @@
     let currentSessionId = null;
     let pollIntervalId = null;
     let pendingFiles = [];
+    
+    // Web search state (OFF by default — only activates when user enables)
+    let webSearchEnabled = false;
+    let customSearchPrompt = "";  // Optional custom search instructions
 
     // In-memory state loaded from server on init
     let state = {
@@ -1689,6 +1780,71 @@
     function scrollToBottom() {
       const c = document.getElementById('messages-container');
       requestAnimationFrame(() => { c.scrollTop = c.scrollHeight; });
+    }
+
+    /**
+     * Render evaluation metrics card with ALL metrics displayed.
+     * Shows dynamically selected metrics based on query type.
+     */
+    function renderEvaluationMetrics(metricsData) {
+      if (!metricsData || !metricsData.formatted_display) {
+        return '';
+      }
+
+      const display = metricsData.formatted_display;
+      const metrics = display.metrics || [];
+      const summary = display.summary || {};
+      const queryAnalysis = metricsData.query_analysis || {};
+
+      if (metrics.length === 0) {
+        return '';
+      }
+
+      let html = '<div class="evaluation-metrics-card" style="margin-top:20px;background:#f8f9fa;border:1px solid #e1e4e8;border-radius:8px;padding:20px;">';
+      
+      // Header
+      html += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">';
+      html += '<h3 style="margin:0;font-size:16px;font-weight:600;color:#1f2937;">📊 Evaluation Metrics</h3>';
+      html += `<span style="font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;">Query Type: ${escapeHtml(queryAnalysis.type || 'general')}</span>`;
+      html += '</div>';
+
+      // Overall verdict
+      html += '<div style="background:white;border-radius:6px;padding:14px;margin-bottom:16px;border-left:4px solid var(--accent);">';
+      html += `<div style="font-size:13px;font-weight:600;color:#1f2937;margin-bottom:4px;">${escapeHtml(summary.verdict || 'N/A')}</div>`;
+      html += `<div style="font-size:12px;color:#6b7280;">${escapeHtml(summary.verdict_description || '')}</div>`;
+      html += `<div style="margin-top:8px;display:flex;gap:16px;font-size:11px;">`;
+      html += `<span><strong>Overall Score:</strong> ${summary.overall_score || 0}/10</span>`;
+      html += `<span><strong>Hallucination Risk:</strong> ${summary.hallucination_risk || 0}%</span>`;
+      html += '</div></div>';
+
+      // Metrics grid
+      html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;">';
+      
+      for (const metric of metrics) {
+        const qualityColor = 
+          metric.quality_label === 'Excellent' ? '#10b981' :
+          metric.quality_label === 'Good' ? '#3b82f6' :
+          metric.quality_label === 'Fair' ? '#f59e0b' : '#ef4444';
+        
+        html += '<div style="background:white;border-radius:6px;padding:12px;border:1px solid #e5e7eb;">';
+        html += '<div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:6px;">';
+        html += `<div style="font-size:12px;font-weight:600;color:#374151;flex:1;">${escapeHtml(metric.name)}</div>`;
+        html += `<div style="font-size:14px;font-weight:700;color:${qualityColor};">${escapeHtml(metric.score_display)}</div>`;
+        html += '</div>';
+        html += `<div style="font-size:10px;color:#6b7280;line-height:1.4;margin-bottom:6px;">${escapeHtml(metric.description)}</div>`;
+        html += `<div style="display:inline-block;padding:2px 8px;background:${qualityColor}15;color:${qualityColor};border-radius:4px;font-size:10px;font-weight:600;">${escapeHtml(metric.quality_label)}</div>`;
+        html += '</div>';
+      }
+      
+      html += '</div>';
+
+      // Footer note
+      html += '<div style="margin-top:12px;padding-top:12px;border-top:1px solid #e5e7eb;font-size:10px;color:#9ca3af;text-align:center;">';
+      html += `✓ ${metrics.length} metrics computed from actual data • Context-aware selection based on query type`;
+      html += '</div>';
+
+      html += '</div>';
+      return html;
     }
 
     /* ================================================================
@@ -1967,12 +2123,20 @@
 
           let fullText = '';
           let thoughtsHTML = '';
+          let evaluationMetrics = null;  // Store evaluation metrics
 
-          // SSE streaming via fetch
+          // SSE streaming via fetch (includes web search toggle state)
           const resp = await fetch(`${API_BASE}/ask/stream`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ session_id: currentSessionId, query: text, deep_research: isDeep, history }),
+            body: JSON.stringify({
+              session_id: currentSessionId,
+              query: text,
+              deep_research: isDeep,
+              enable_web_search: webSearchEnabled,
+              custom_search_prompt: customSearchPrompt,
+              history
+            }),
             credentials: 'same-origin',
           });
 
@@ -1997,7 +2161,7 @@
               if (line.startsWith('event: ')) { eventType = line.slice(7).trim(); continue; }
               if (line.startsWith('data: ')) {
                 const data = JSON.parse(line.slice(6));
-                
+
                 const renderWithThoughts = (text) => {
                   let html = '';
                   if (thoughtsHTML) {
@@ -2024,7 +2188,7 @@
                   if (data.includes('❌') || data.includes('ERROR:')) color = '#e17055';
                   else if (data.includes('✅')) color = '#00b894';
                   thoughtsHTML += `<div style="color:${color};margin-bottom:2px;">${escapeHtml(data)}</div>`;
-                  
+
                   if (bubble) {
                     bubble.innerHTML = renderWithThoughts(fullText);
                     bubble.classList.add('streaming-cursor');
@@ -2038,6 +2202,20 @@
                     bubble.classList.add('streaming-cursor');
                   }
                   scrollToBottom();
+                } else if (eventType === 'web_search_status' && data) {
+                  // Show web search status in thoughts panel
+                  thoughtsHTML += `<div style="color:#00cec9;margin-bottom:2px;">🌐 ${escapeHtml(data)}</div>`;
+                  if (bubble) {
+                    bubble.innerHTML = renderWithThoughts(fullText);
+                    bubble.classList.add('streaming-cursor');
+                    const tc = bubble.querySelector('.agent-thoughts-container');
+                    if (tc) tc.scrollTop = tc.scrollHeight;
+                  }
+                  scrollToBottom();
+                } else if (eventType === 'evaluation_metrics' && data) {
+                  // Store evaluation metrics for display after report
+                  evaluationMetrics = data;
+                  console.log('Received evaluation metrics:', data);
                 } else if (eventType === 'error') {
                   throw new Error(data);
                 }
@@ -2050,8 +2228,18 @@
           botMsg.content = isDeep ? '✅ **Deep research analysis complete!**' : fullText;
           if (isDeep) botMsg.report_markdown = fullText;
           if (bubble) {
-            if (isDeep) { bubble.innerHTML = `<div>${renderMarkdownLite(botMsg.content)}</div><div class="report-card"><div class="report-card-header">📄 Literature Review Report</div><div class="report-card-body">${renderMarkdown(fullText)}</div></div>`; }
-            else { bubble.innerHTML = renderMarkdownLite(fullText); }
+            if (isDeep) {
+              let reportHTML = `<div>${renderMarkdownLite(botMsg.content)}</div><div class="report-card"><div class="report-card-header">📄 Literature Review Report</div><div class="report-card-body">${renderMarkdown(fullText)}</div></div>`;
+              
+              // Add evaluation metrics if available
+              if (evaluationMetrics) {
+                reportHTML += renderEvaluationMetrics(evaluationMetrics);
+              }
+              
+              bubble.innerHTML = reportHTML;
+            } else {
+              bubble.innerHTML = renderMarkdownLite(fullText);
+            }
           }
 
           // Persist bot response to server
@@ -2172,41 +2360,41 @@
 
     // Color palette for entity types — expanded for richer graph semantics
     const ENTITY_COLORS = {
-      'method':           { bg: '#6c5ce7', border: '#5a4bd1' },
-      'framework':        { bg: '#6c5ce7', border: '#5a4bd1' },
-      'architecture':     { bg: '#6c5ce7', border: '#5a4bd1' },
-      'algorithm':        { bg: '#6c5ce7', border: '#5a4bd1' },
-      'dataset':          { bg: '#00b894', border: '#00a381' },
-      'benchmark':        { bg: '#00b894', border: '#00a381' },
-      'metric':           { bg: '#e17055', border: '#d35a43' },
-      'evaluation':       { bg: '#e17055', border: '#d35a43' },
-      'concept':          { bg: '#a388ee', border: '#8b6fd8' },
-      'tool':             { bg: '#0984e3', border: '#076bb3' },
-      'author':           { bg: '#fd79a8', border: '#e0608d' },
-      'Paper':            { bg: '#fdcb6e', border: '#e17055' },
-      'chunking_method':  { bg: '#00cec9', border: '#009e9c' },
+      'method': { bg: '#6c5ce7', border: '#5a4bd1' },
+      'framework': { bg: '#6c5ce7', border: '#5a4bd1' },
+      'architecture': { bg: '#6c5ce7', border: '#5a4bd1' },
+      'algorithm': { bg: '#6c5ce7', border: '#5a4bd1' },
+      'dataset': { bg: '#00b894', border: '#00a381' },
+      'benchmark': { bg: '#00b894', border: '#00a381' },
+      'metric': { bg: '#e17055', border: '#d35a43' },
+      'evaluation': { bg: '#e17055', border: '#d35a43' },
+      'concept': { bg: '#a388ee', border: '#8b6fd8' },
+      'tool': { bg: '#0984e3', border: '#076bb3' },
+      'author': { bg: '#fd79a8', border: '#e0608d' },
+      'Paper': { bg: '#fdcb6e', border: '#e17055' },
+      'chunking_method': { bg: '#00cec9', border: '#009e9c' },
       'retrieval_method': { bg: '#74b9ff', border: '#5496d6' },
-      'embedding':        { bg: '#ffeaa7', border: '#ddc76e' },
-      'category':         { bg: '#dfe6e9', border: '#b2bec3' },
-      'default':          { bg: '#b2bec3', border: '#95a5a6' },
+      'embedding': { bg: '#ffeaa7', border: '#ddc76e' },
+      'category': { bg: '#dfe6e9', border: '#b2bec3' },
+      'default': { bg: '#b2bec3', border: '#95a5a6' },
     };
 
     // Edge color palette by relationship semantic type
     const EDGE_STYLES = {
-      'IMPROVES':      { color: '#00b894', width: 3, style: 'solid' },
-      'OUTPERFORMS':   { color: '#00b894', width: 3, style: 'solid' },
+      'IMPROVES': { color: '#00b894', width: 3, style: 'solid' },
+      'OUTPERFORMS': { color: '#00b894', width: 3, style: 'solid' },
       'COMPARES_WITH': { color: '#fdcb6e', width: 2, style: 'dashed' },
-      'EVALUATED_ON':  { color: '#e17055', width: 2, style: 'dotted' },
-      'USES':          { color: '#74b9ff', width: 2, style: 'solid' },
-      'BASED_ON':      { color: '#74b9ff', width: 2, style: 'solid' },
-      'CHUNKS_WITH':   { color: '#00cec9', width: 2, style: 'solid' },
-      'RETRIEVES_WITH':{ color: '#a388ee', width: 2, style: 'solid' },
-      'EMBEDS_WITH':   { color: '#ffeaa7', width: 2, style: 'solid' },
-      'LIMITS':        { color: '#d63031', width: 2, style: 'dashed' },
-      'CONTRADICTS':   { color: '#d63031', width: 2, style: 'dashed' },
-      'PART_OF':       { color: '#b2bec3', width: 1.5, style: 'dotted' },
-      'EXTENDS':       { color: '#6c5ce7', width: 2, style: 'solid' },
-      'OPTIMIZES':     { color: '#00b894', width: 2, style: 'solid' },
+      'EVALUATED_ON': { color: '#e17055', width: 2, style: 'dotted' },
+      'USES': { color: '#74b9ff', width: 2, style: 'solid' },
+      'BASED_ON': { color: '#74b9ff', width: 2, style: 'solid' },
+      'CHUNKS_WITH': { color: '#00cec9', width: 2, style: 'solid' },
+      'RETRIEVES_WITH': { color: '#a388ee', width: 2, style: 'solid' },
+      'EMBEDS_WITH': { color: '#ffeaa7', width: 2, style: 'solid' },
+      'LIMITS': { color: '#d63031', width: 2, style: 'dashed' },
+      'CONTRADICTS': { color: '#d63031', width: 2, style: 'dashed' },
+      'PART_OF': { color: '#b2bec3', width: 1.5, style: 'dotted' },
+      'EXTENDS': { color: '#6c5ce7', width: 2, style: 'solid' },
+      'OPTIMIZES': { color: '#00b894', width: 2, style: 'solid' },
     };
 
     function getEdgeStyle(relType) {
@@ -2246,7 +2434,7 @@
         legend.id = 'graph-legend';
         legend.style.cssText = 'position:absolute;top:12px;left:12px;background:rgba(255,255,255,0.95);border:1px solid #e8eaf0;border-radius:10px;padding:12px 14px;font-size:11px;z-index:10;box-shadow:0 2px 8px rgba(0,0,0,0.1);';
         const legendTypes = ['method', 'dataset', 'metric', 'chunking_method', 'retrieval_method', 'embedding', 'concept', 'Paper', 'category'];
-      legend.innerHTML = '<div style="font-weight:700;margin-bottom:6px;font-size:12px;">Entity Types</div>' +
+        legend.innerHTML = '<div style="font-weight:700;margin-bottom:6px;font-size:12px;">Entity Types</div>' +
           legendTypes.filter(k => ENTITY_COLORS[k]).map(type => {
             const c = ENTITY_COLORS[type];
             const shape = type === 'Paper' ? '50%' : type === 'category' ? '2px' : '3px';
@@ -2273,10 +2461,10 @@
         const resp = await fetch(API_BASE + '/graph_data', { credentials: 'same-origin' });
         if (!resp.ok) throw new Error('Failed to fetch graph data');
         const data = await resp.json();
-        
+
         if (!data.nodes || data.nodes.length === 0) {
-            container.innerHTML = '<div style="padding:40px;text-align:center;color:#e17055;"><strong>\u26a0\ufe0f Neo4j Knowledge Graph Offline or Empty</strong><p style="margin-top:10px;color:var(--text-secondary);">Could not connect to Neo4j or no entities extracted yet. Run a Deep Research query first, then refresh.</p></div>';
-            return;
+          container.innerHTML = '<div style="padding:40px;text-align:center;color:#e17055;"><strong>\u26a0\ufe0f Neo4j Knowledge Graph Offline or Empty</strong><p style="margin-top:10px;color:var(--text-secondary);">Could not connect to Neo4j or no entities extracted yet. Run a Deep Research query first, then refresh.</p></div>';
+          return;
         }
 
         container.innerHTML = ''; // clear loading
@@ -2425,8 +2613,8 @@
             animationDuration: 1000,
             idealEdgeLength: 180,
             nodeOverlap: 40,
-            nodeRepulsion: function(node) { return 8000; },
-            edgeElasticity: function(edge) { return 50; },
+            nodeRepulsion: function (node) { return 8000; },
+            edgeElasticity: function (edge) { return 50; },
             gravity: 0.15,
             numIter: 1500,
             padding: 60,
@@ -2442,7 +2630,7 @@
             showAllBtn.id = 'graph-show-all';
             showAllBtn.textContent = `Show all ${data.nodes.length} nodes`;
             showAllBtn.style.cssText = 'position:absolute;bottom:14px;left:14px;background:#6c5ce7;color:white;border:none;border-radius:8px;padding:8px 14px;font-size:12px;cursor:pointer;z-index:15;box-shadow:0 2px 8px rgba(0,0,0,0.2);';
-            showAllBtn.onclick = function() {
+            showAllBtn.onclick = function () {
               // Reload with all data
               data.nodes.forEach(n => {
                 const eType = n.data.entity_type || n.data.type || 'default';
@@ -2474,12 +2662,12 @@
           fitBtn.id = 'graph-fit-btn';
           fitBtn.textContent = '⊞ Fit';
           fitBtn.style.cssText = 'position:absolute;bottom:14px;right:14px;background:#2d3436;color:white;border:none;border-radius:8px;padding:8px 12px;font-size:12px;cursor:pointer;z-index:15;box-shadow:0 2px 8px rgba(0,0,0,0.2);';
-          fitBtn.onclick = function() { cyInstance.fit(undefined, 40); };
+          fitBtn.onclick = function () { cyInstance.fit(undefined, 40); };
           container.parentElement.appendChild(fitBtn);
         }
 
         // ── Tooltip on hover ──
-        cyInstance.on('mouseover', 'node', function(e) {
+        cyInstance.on('mouseover', 'node', function (e) {
           const node = e.target;
           const d = node.data();
           const type = d.entity_type || d.type || '';
@@ -2496,7 +2684,7 @@
           tooltip.style.display = 'block';
         });
 
-        cyInstance.on('mouseover', 'edge', function(e) {
+        cyInstance.on('mouseover', 'edge', function (e) {
           const edge = e.target;
           const d = edge.data();
           const desc = d.description || '';
@@ -2511,12 +2699,12 @@
           }
         });
 
-        cyInstance.on('mouseout', 'node, edge', function() {
+        cyInstance.on('mouseout', 'node, edge', function () {
           tooltip.style.display = 'none';
         });
 
         // ── Click to show entity detail panel with relationship reasons ──
-        cyInstance.on('tap', 'node', function(e) {
+        cyInstance.on('tap', 'node', function (e) {
           const node = e.target;
           const d = node.data();
 
@@ -2566,7 +2754,7 @@
         });
 
         // Click on edge to show relationship detail
-        cyInstance.on('tap', 'edge', function(e) {
+        cyInstance.on('tap', 'edge', function (e) {
           const edge = e.target;
           const ed = edge.data();
           const srcData = edge.source().data();
@@ -2600,7 +2788,7 @@
         });
 
         // Click background to reset
-        cyInstance.on('tap', function(e) {
+        cyInstance.on('tap', function (e) {
           if (e.target === cyInstance) {
             cyInstance.elements().removeClass('highlighted faded');
             const panel = document.getElementById('graph-detail-panel');
@@ -2682,6 +2870,36 @@
         optNormal.classList.add('selected');
         optDeep.classList.remove('selected');
         pill.style.display = 'none';
+      }
+    }
+
+    /**
+     * Toggle web search on/off.
+     * Web search is OFF by default to keep responses fast.
+     * Only activates when user explicitly enables it.
+     */
+    function toggleWebSearch() {
+      webSearchEnabled = !webSearchEnabled;
+      updateWebSearchUI();
+      
+      // Close dropdown after toggle
+      document.getElementById('mode-dropdown').classList.remove('visible');
+      document.getElementById('input-mode-btn').classList.remove('open');
+    }
+
+    function updateWebSearchUI() {
+      const optWebsearch = document.getElementById('opt-websearch');
+      const statusEl = document.getElementById('websearch-status');
+      const pill = document.getElementById('websearch-pill');
+      
+      if (webSearchEnabled) {
+        optWebsearch.classList.add('selected', 'websearch-on');
+        statusEl.textContent = 'ON — Tavily/DuckDuckGo';
+        pill.classList.add('visible');
+      } else {
+        optWebsearch.classList.remove('selected', 'websearch-on');
+        statusEl.textContent = 'OFF — Papers only';
+        pill.classList.remove('visible');
       }
     }
 

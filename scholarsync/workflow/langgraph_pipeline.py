@@ -60,6 +60,11 @@ class GraphState(TypedDict):
     
     # User ID for multi-user graph isolation
     user_id: str
+    
+    # Web search integration (only used when explicitly enabled)
+    web_search_context: str       # Formatted web search results
+    web_search_provider: str      # "tavily", "duckduckgo", or ""
+    enable_web_search: bool       # Whether web search was requested
 
     # Manager output
     subtasks: list[dict]
@@ -435,6 +440,16 @@ def synthesizer_node(state: GraphState) -> GraphState:
         validation_results = [ValidationResult(**vr) for vr in state.get("validation_results", [])]
         paper_metadata = [PaperMetadata(**p) for p in state["paper_metadata"]]
         graph_insights = state.get("graph_insights")
+        
+        # Include web search context if available
+        web_search_context = state.get("web_search_context", "")
+        web_search_provider = state.get("web_search_provider", "")
+        if web_search_context:
+            if graph_insights is None:
+                graph_insights = {}
+            graph_insights["web_search_context"] = web_search_context
+            graph_insights["web_search_provider"] = web_search_provider
+            state["progress_messages"].append(f"🌐 Including web search results from {web_search_provider}")
 
         # Rebuild profiles from state
         profiles = None
@@ -452,6 +467,10 @@ def synthesizer_node(state: GraphState) -> GraphState:
         )
 
         report_md = format_review_as_markdown(review)
+        
+        # Add web search attribution if used
+        if web_search_context and web_search_provider:
+            report_md += f"\n\n---\n*This report includes supplementary information from web search ({web_search_provider}).*"
 
         state["final_report"] = review.model_dump()
         state["report_markdown"] = report_md
@@ -478,8 +497,13 @@ def synthesizer_node(state: GraphState) -> GraphState:
 
 
 def evaluation_node(state: GraphState) -> GraphState:
-    """Evaluation Node: compute real metrics on the generated output."""
-    logger.info("Pipeline: Running evaluation metrics")
+    """
+    Evaluation Node: compute real metrics on the generated output.
+    
+    Uses DYNAMIC metric selection based on query type and context.
+    All metrics are computed from actual data — no heuristic self-scoring.
+    """
+    logger.info("Pipeline: Running dynamic evaluation metrics")
 
     report_md = state.get("report_markdown", "")
     if not report_md:
@@ -487,10 +511,11 @@ def evaluation_node(state: GraphState) -> GraphState:
         return state
 
     try:
-        from scholarsync.evaluation.evaluator import evaluate_pipeline_output
+        from scholarsync.evaluation.dynamic_metrics import run_dynamic_evaluation
         from scholarsync.rag.vector_store import search as vector_search
 
         query = state["query"]
+        has_web_search = state.get("enable_web_search", False)
 
         # Retrieve source chunks for evaluation
         source_chunks = []
@@ -509,28 +534,38 @@ def evaluation_node(state: GraphState) -> GraphState:
             for p in state.get("paper_metadata", [])
         ]
 
-        evaluation = evaluate_pipeline_output(
+        # Run dynamic evaluation with context-aware metric selection
+        evaluation = run_dynamic_evaluation(
             query=query,
             generated_text=report_md,
             source_chunks=source_chunks,
             paper_titles=paper_titles,
+            has_web_search=has_web_search,
         )
 
-        # Store evaluation in state
-        state["evaluation_metrics"] = evaluation.get("metrics", {})
-        overall = evaluation.get("metrics", {}).get("overall_quality", 0)
+        # Store full evaluation in state (includes formatted display)
+        state["evaluation_metrics"] = {
+            "raw_metrics": evaluation.get("raw_metrics", {}),
+            "formatted_display": evaluation.get("formatted_display", {}),
+            "hallucination_report": evaluation.get("hallucination_report", {}),
+            "query_analysis": evaluation.get("query_analysis", {}),
+        }
+        
+        overall = evaluation.get("raw_metrics", {}).get("overall_quality", 0)
         halluc = evaluation.get("hallucination_report", {}).get("hallucination_score", 0)
-        verdict = evaluation.get("summary", {}).get("overall_verdict", "")
+        verdict = evaluation.get("formatted_display", {}).get("summary", {}).get("verdict", "")
+        query_type = evaluation.get("query_analysis", {}).get("type", "general")
+        metrics_shown = evaluation.get("formatted_display", {}).get("metric_count", 0)
 
         state["progress_messages"].append(
-            f"📊 Evaluation: quality={overall:.2f} | hallucination={halluc:.2f} | {verdict}"
+            f"📊 Evaluation: {verdict} | quality={overall:.2f} | {metrics_shown} metrics computed"
         )
 
         try:
             from scholarsync.chat.mode_router import enqueue_thought
             enqueue_thought(
                 state["session_id"],
-                f"  ↳ Evaluation complete: quality={overall:.2f}, hallucination_risk={halluc:.2f}"
+                f"  ↳ Query type: {query_type} | Overall: {overall:.2f} | Hallucination risk: {halluc:.2f}"
             )
         except Exception:
             pass
@@ -633,6 +668,10 @@ def run_pipeline(
         "status": PipelineStatus.PENDING.value,
         "progress_messages": ["🚀 Pipeline started!"],
         "user_id": user_id,
+        # Web search fields (empty by default, populated by streaming endpoint)
+        "web_search_context": "",
+        "web_search_provider": "",
+        "enable_web_search": False,
         "subtasks": [],
         "extractions": [],
         "validation_results": [],
