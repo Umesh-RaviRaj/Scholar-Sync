@@ -178,15 +178,14 @@ async def upload_papers(
     except Exception:
         logger.warning("Upload without auth — graph will use global scope")
     
-    # Clear user's old graph data to ensure fresh graph on new uploads
-    if user_id:
-        try:
-            from scholarsync.rag.graph_rag import clear_user_graph, clear_user_graph_neo4j
-            clear_user_graph(user_id)
-            clear_user_graph_neo4j(user_id)
-            logger.info("Cleared old graph data for user %s before new upload", user_id[:8])
-        except Exception as e:
-            logger.warning("Could not clear old graph (non-fatal): %s", e)
+    # CRITICAL: Clear ALL graph data on new upload (session-based, not user-based)
+    # This ensures the graph shows ONLY the current set of uploaded papers
+    try:
+        from scholarsync.rag.graph_rag import clear_all_graph_data
+        clear_all_graph_data()
+        logger.info("Cleared all graph data before new upload (session %s)", session_id[:8])
+    except Exception as e:
+        logger.warning("Could not clear graph (non-fatal): %s", e)
 
     if len(files) > settings.max_papers:
         raise HTTPException(
@@ -344,33 +343,115 @@ async def get_report(session_id: str):
 
 # ── Graph Visualization ───────────────────────────────────────────────
 
-from fastapi import Request, Depends
-from scholarsync.auth.router import get_current_user_local
+from fastapi import Request
+from scholarsync.auth.security import decode_access_token
+from scholarsync.auth import service as auth_service
+
+
+async def _get_user_id_from_request(request: Request) -> str:
+    """
+    Extract and verify the authenticated user_id directly from the JWT cookie
+    or Authorization header — without using FastAPI Depends() injection.
+
+    Returns the user_id string, or raises HTTPException 401 on failure.
+    """
+    token = None
+
+    # 1. Try Authorization: Bearer <token> header
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+
+    # 2. Fall back to cookie (set by /auth/login)
+    if not token:
+        token = request.cookies.get("access_token")
+
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated. Please log in.")
+
+    payload = decode_access_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid or expired token. Please log in again.")
+
+    user_id_str = payload.get("sub")
+    if not user_id_str:
+        raise HTTPException(status_code=401, detail="Invalid token payload.")
+
+    user = await auth_service.get_user_by_id(int(user_id_str))
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found.")
+
+    return str(user.get("id", ""))
+
 
 @app.get("/graph_data")
 async def get_graph_data(request: Request):
     """
     Returns the knowledge graph in Cytoscape.js JSON format.
-    IMPORTANT: User-scoped — only returns graph data for the authenticated user.
+    SESSION-BASED: Shows graph for currently uploaded papers only.
+    Graph is cleared on new paper upload.
     """
     from scholarsync.rag.graph_rag import get_full_graph_data_cytoscape
     
-    # Extract user_id from JWT cookie for graph isolation
-    user_id = ""
-    try:
-        user = await get_current_user_local(request)
-        user_id = str(user.get("id", ""))
-    except Exception:
-        # If not authenticated, return empty graph (safe default)
-        logger.warning("Graph data requested without valid auth — returning empty graph")
-        return {"nodes": [], "edges": []}
+    logger.info("Graph data request (session-based, no user filtering)")
     
     try:
-        data = get_full_graph_data_cytoscape(user_id=user_id)
+        # Fetch ALL graph data (no user_id filtering)
+        # Since we clear the graph on upload, this shows only current session's papers
+        data = get_full_graph_data_cytoscape(user_id="")
+        node_count = len(data.get("nodes", []))
+        edge_count = len(data.get("edges", []))
+        logger.info("Graph data returned: %d nodes, %d edges", node_count, edge_count)
+        
+        if node_count == 0:
+            logger.info("Graph is empty - need to run Deep Research to populate")
+        
         return data
     except Exception as e:
-        logger.error("Failed to get graph data for user %s: %s", user_id[:8] if user_id else "unknown", e)
+        logger.error("Failed to get graph data: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/graph_data")
+async def delete_graph_data(request: Request):
+    """
+    Delete all knowledge graph data for the authenticated user.
+    Clears both in-memory cache and Neo4j storage.
+    Returns confirmation with counts of cleared nodes/edges.
+    """
+    from scholarsync.rag.graph_rag import (
+        clear_user_graph,
+        clear_user_graph_neo4j,
+        get_full_graph_data_cytoscape,
+    )
+
+    # Auth is required for delete — no global fallback
+    user_id = await _get_user_id_from_request(request)
+
+    try:
+        # Get counts before clearing for the response
+        existing = get_full_graph_data_cytoscape(user_id=user_id)
+        cleared_nodes = len(existing.get("nodes", []))
+        cleared_edges = len(existing.get("edges", []))
+
+        clear_user_graph(user_id)
+        clear_user_graph_neo4j(user_id)
+
+        logger.info(
+            "Deleted graph for user %s: %d nodes, %d edges cleared",
+            user_id[:8], cleared_nodes, cleared_edges,
+        )
+        return {
+            "status": "ok",
+            "message": f"Graph cleared: {cleared_nodes} nodes and {cleared_edges} edges removed.",
+            "cleared_nodes": cleared_nodes,
+            "cleared_edges": cleared_edges,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to delete graph for user %s: %s", user_id[:8], e)
+        raise HTTPException(status_code=500, detail=f"Failed to clear graph: {str(e)}")
 
 
 # ── Evaluation Endpoint ───────────────────────────────────────────────

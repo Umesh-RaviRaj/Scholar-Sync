@@ -50,8 +50,14 @@ Example output:
   }
 ]
 
-Generate between 4 and 6 subtasks to thoroughly cover the research query.
-Always include at minimum: entities, methodology, findings, and risks.
+CRITICAL REQUIREMENTS:
+- Generate between 6 and 8 subtasks to THOROUGHLY cover the research query
+- ALWAYS include: entities, methodology, findings, risks, AND claims
+- Each subtask must request SPECIFIC NUMBERS, METRICS, and QUANTITATIVE DATA
+- Each subtask must emphasize extracting EVIDENCE and CITATIONS for evaluation
+- Prompts must be DETAILED and demand comprehensive extraction
+
+This ensures high-quality, evidence-based synthesis with good source diversity.
 """
 
 

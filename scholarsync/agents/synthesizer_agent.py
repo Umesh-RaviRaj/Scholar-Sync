@@ -33,11 +33,11 @@ You MUST produce valid JSON with this structure:
 {
   "title": "Literature Review: [Specific Topic]",
 
-  "summary": "Executive summary (300+ words). State the research landscape, the BEST approach identified, and WHY it dominates. Be decisive.",
+  "summary": "Executive summary (300+ words). State the research landscape, the BEST approach identified, and WHY it dominates [cite paper_number]. Be decisive. EVERY factual claim MUST have [paper_X] citation.",
 
-  "methodology_comparison": "CRITICAL SECTION (500+ words). Compare ALL methodologies DIMENSION BY DIMENSION:\n- Retrieval quality\n- Semantic coherence\n- Scalability\n- Computational efficiency\n- Context preservation\n- Long-document handling\n- Production suitability\n- Retrieval latency\n- Embedding efficiency\n- Chunking intelligence\n\nFor each dimension: state which paper/method wins and why. Use specific numbers. Build a clear ranking. Do NOT repeat summaries — COMPARE and CONTRAST.",
+  "methodology_comparison": "CRITICAL SECTION (500+ words). Compare ALL methodologies DIMENSION BY DIMENSION:\n- Retrieval quality [cite which paper reports what]\n- Semantic coherence [cite performance data]\n- Scalability [cite dataset sizes, throughput numbers]\n- Computational efficiency [cite latency, cost metrics]\n- Context preservation [cite evaluation results]\n- Long-document handling [cite capabilities]\n- Production suitability [cite deployment data]\n- Retrieval latency [cite specific ms numbers]\n- Embedding efficiency [cite vector dimensions, memory]\n- Chunking intelligence [cite chunk strategies]\n\nFor each dimension: state which paper/method wins [cite], by how much [numbers], and why [evidence]. Build a clear ranking with citations. Do NOT repeat summaries — COMPARE and CONTRAST with evidence.",
 
-  "key_findings": "Thematic synthesis (400+ words). Organize by theme, not by paper. Include metrics, benchmarks, specific numbers. State what the collective evidence proves. Never repeat the same insight twice.",
+  "key_findings": "Thematic synthesis (400+ words). Organize by theme, not by paper. Include metrics [cite], benchmarks [cite], specific numbers [cite]. State what the collective evidence proves [cite sources]. MANDATORY: Every sentence with a fact must include [paper_X] citation. Never repeat the same insight twice.",
 
   "cross_paper_insights": "Non-obvious connections (300+ words). Contradictions, complementary techniques, convergent conclusions, emergent patterns. What story do these papers tell TOGETHER that no single paper reveals alone?",
 
@@ -46,23 +46,31 @@ You MUST produce valid JSON with this structure:
   "research_gaps": "Gaps and future work (250+ words). Specific actionable gaps. What datasets are missing? What hybrid approaches remain untested? What production scenarios are unaddressed?",
 
   "safety_scorecard": {
-    "grounding_score": 0.85,
-    "citation_coverage": 0.90,
-    "cross_reference_score": 0.80,
-    "hallucination_risk": 0.10,
-    "overall_quality": 0.85
+    "grounding_score": 0.92,
+    "citation_coverage": 0.95,
+    "cross_reference_score": 0.88,
+    "hallucination_risk": 0.05,
+    "overall_quality": 0.90
   }
+  
+NOTE: These scorecard values are TARGETS. Your actual report must aim for:
+- 95%+ citation coverage (nearly every claim cited)
+- <5% hallucination risk (only state what papers explicitly say)
+- 90%+ overall quality (detailed, analytical, evidence-based)
 }
 
-CRITICAL RULES:
-1. ALWAYS cite with [paper_number]. Every claim must trace to a source.
-2. NEVER repeat the same insight in multiple sections. Each sentence must add new information.
-3. NEVER use weak conclusions like "it depends on the use case" or "all methods have tradeoffs". Be DECISIVE — pick winners, explain WHY, acknowledge limitations.
-4. Compare dimension-by-dimension, not paper-by-paper.
-5. Use specific data: numbers, percentages, benchmark names, dataset sizes.
-6. Rank approaches explicitly: "Method X outperforms Y because..."
-7. Discuss production suitability: latency, cost, scalability, deployment complexity.
-8. Output valid JSON only.
+CRITICAL RULES (STRICT - NO EXCEPTIONS):
+1. ALWAYS cite with [paper_number]. EVERY SINGLE CLAIM must trace to a source. No exceptions.
+2. NEVER make assertions without citing supporting evidence from the papers.
+3. NEVER repeat the same insight in multiple sections. Each sentence must add new information.
+4. NEVER use weak conclusions like "it depends on the use case" or "all methods have tradeoffs". Be DECISIVE — pick winners, explain WHY, acknowledge limitations.
+5. Compare dimension-by-dimension, not paper-by-paper.
+6. Use SPECIFIC data: exact numbers, percentages, benchmark names, dataset sizes, performance metrics.
+7. Rank approaches explicitly: "Method X outperforms Y by Z% because..."
+8. Discuss production suitability: latency (ms), cost ($), scalability (users/req), deployment complexity.
+9. When stating findings, use phrases like "According to [paper_X]...", "Paper [Y] reports...", "[Z] demonstrates..."
+10. If information is not explicitly in the papers, DO NOT INFER OR GUESS. State "Not reported in reviewed papers."
+11. Output valid JSON only. No markdown, no preamble.
 """
 
 

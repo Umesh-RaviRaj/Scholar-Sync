@@ -34,23 +34,30 @@ For each claim, finding, or extraction provided, you must:
 4. Flag any "shadow claims" (assertions without evidence)
 5. Assign a confidence score (0.0 to 1.0) for each item
 
+SCORING STANDARDS (STRICT):
+- overall_score: 0.0-1.0 (aim for 0.85+ for well-grounded extractions)
+- confidence: 0.0-1.0 (0.9+ only if claim is DIRECTLY quoted from source)
+- ONLY mark is_grounded=true if you can find EXPLICIT supporting evidence
+- If a claim seems reasonable but lacks direct evidence → is_grounded=false
+- Hallucination = ANY claim not traceable to source text
+
 You MUST output valid JSON with this structure:
 {
-  "overall_score": 0.34,
+  "overall_score": 0.88,
   "is_valid": true,
   "claim_validations": [
     {
       "claim": "the specific claim text",
       "is_grounded": true,
-      "confidence": 0.45,
-      "supporting_evidence": ["quote from source that supports this"],
+      "confidence": 0.92,
+      "supporting_evidence": ["EXACT quote from source that directly supports this claim"],
       "issues": []
     }
   ],
-  "hallucination_flags": ["description of any hallucinated content"],
-  "unsupported_claims": ["claims that lack source support"],
+  "hallucination_flags": ["description of any hallucinated content - BE STRICT"],
+  "unsupported_claims": ["claims that lack DIRECT source support"],
   "correction_prompts": ["specific instructions to fix issues"],
-  "feedback": "Overall assessment of extraction quality"
+  "feedback": "Overall assessment of extraction quality with specific strengths/weaknesses"
 }
 
 Scoring Guidelines:

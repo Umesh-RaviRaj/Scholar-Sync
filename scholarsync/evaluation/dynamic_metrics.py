@@ -196,7 +196,7 @@ METRIC_DESCRIPTIONS = {
     },
     "hallucination_score": {
         "name": "Hallucination Risk",
-        "description": "Fraction of claims that may not be supported by sources (lower is better).",
+        "description": "Fraction of claims that may not be supported by sources.",
         "good_threshold": 0.2,  # Inverted - lower is better
         "category": "grounding",
         "inverted": True,

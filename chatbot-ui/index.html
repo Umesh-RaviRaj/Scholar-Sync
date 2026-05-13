@@ -854,6 +854,95 @@
       flex: 1;
       width: 100%;
       background: #fafafc;
+      position: relative;
+    }
+
+    .graph-header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .graph-delete-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 14px;
+      background: rgba(225, 112, 85, 0.1);
+      color: #e17055;
+      border: 1px solid rgba(225, 112, 85, 0.25);
+      border-radius: 8px;
+      font-family: 'Inter', sans-serif;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all var(--transition);
+    }
+
+    .graph-delete-btn:hover {
+      background: rgba(225, 112, 85, 0.2);
+      border-color: #e17055;
+      box-shadow: 0 2px 8px rgba(225, 112, 85, 0.15);
+    }
+
+    .graph-delete-btn svg {
+      width: 14px;
+      height: 14px;
+      stroke: currentColor;
+    }
+
+    .graph-placeholder {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      text-align: center;
+      padding: 40px;
+      animation: fadeInPlaceholder 0.4s ease;
+    }
+
+    @keyframes fadeInPlaceholder {
+      from {
+        opacity: 0;
+        transform: translateY(12px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .graph-placeholder .placeholder-icon {
+      width: 72px;
+      height: 72px;
+      background: var(--accent-glow);
+      border-radius: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 20px;
+    }
+
+    .graph-placeholder .placeholder-icon svg {
+      width: 36px;
+      height: 36px;
+      stroke: var(--accent);
+    }
+
+    .graph-placeholder h3 {
+      color: #4a5568;
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+
+    .graph-placeholder p {
+      color: #9ca3af;
+      font-size: 14px;
+      line-height: 1.6;
+      max-width: 420px;
     }
 
     /* ─── Report card ─── */
@@ -1557,7 +1646,25 @@
           </svg>
           Knowledge Graph
         </h3>
-        <button class="close-btn" onclick="closeGraphModal()">&times;</button>
+        <div class="graph-header-actions">
+          <button class="graph-refresh-btn" id="btn-refresh-graph" onclick="refreshGraph()"
+            title="Refresh graph (reload from server)" style="background:#10b981;border-color:#10b981;margin-right:8px;">
+            <svg fill="none" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            Refresh
+          </button>
+          <button class="graph-delete-btn" id="btn-delete-graph" onclick="deleteGraphData()"
+            title="Delete all graph data">
+            <svg fill="none" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
+            Delete Graph
+          </button>
+          <button class="close-btn" onclick="closeGraphModal()">&times;</button>
+        </div>
       </div>
       <div id="cy" class="cy-container"></div>
     </div>
@@ -1586,7 +1693,7 @@
     let currentSessionId = null;
     let pollIntervalId = null;
     let pendingFiles = [];
-    
+
     // Web search state (OFF by default — only activates when user enables)
     let webSearchEnabled = false;
     let customSearchPrompt = "";  // Optional custom search instructions
@@ -1801,7 +1908,7 @@
       }
 
       let html = '<div class="evaluation-metrics-card" style="margin-top:20px;background:#f8f9fa;border:1px solid #e1e4e8;border-radius:8px;padding:20px;">';
-      
+
       // Header
       html += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">';
       html += '<h3 style="margin:0;font-size:16px;font-weight:600;color:#1f2937;">📊 Evaluation Metrics</h3>';
@@ -1819,13 +1926,13 @@
 
       // Metrics grid
       html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;">';
-      
+
       for (const metric of metrics) {
-        const qualityColor = 
+        const qualityColor =
           metric.quality_label === 'Excellent' ? '#10b981' :
-          metric.quality_label === 'Good' ? '#3b82f6' :
-          metric.quality_label === 'Fair' ? '#f59e0b' : '#ef4444';
-        
+            metric.quality_label === 'Good' ? '#3b82f6' :
+              metric.quality_label === 'Fair' ? '#f59e0b' : '#ef4444';
+
         html += '<div style="background:white;border-radius:6px;padding:12px;border:1px solid #e5e7eb;">';
         html += '<div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:6px;">';
         html += `<div style="font-size:12px;font-weight:600;color:#374151;flex:1;">${escapeHtml(metric.name)}</div>`;
@@ -1835,7 +1942,7 @@
         html += `<div style="display:inline-block;padding:2px 8px;background:${qualityColor}15;color:${qualityColor};border-radius:4px;font-size:10px;font-weight:600;">${escapeHtml(metric.quality_label)}</div>`;
         html += '</div>';
       }
-      
+
       html += '</div>';
 
       // Footer note
@@ -2087,6 +2194,9 @@
           appendMessageToDOM(botMsg);
           persistMessage(chatId, botMsg);
           clearFiles();
+
+          // Clear old graph visualization (new papers = new graph)
+          clearGraphVisualization();
         } catch (err) {
           removeTypingIndicator();
           const errMsg = { id: generateId(), role: 'bot', type: 'text', content: `❌ **Upload failed:** ${err.message}\n\nPlease check that the backend is running at ${API_BASE}`, time: formatTime(new Date()) };
@@ -2230,12 +2340,12 @@
           if (bubble) {
             if (isDeep) {
               let reportHTML = `<div>${renderMarkdownLite(botMsg.content)}</div><div class="report-card"><div class="report-card-header">📄 Literature Review Report</div><div class="report-card-body">${renderMarkdown(fullText)}</div></div>`;
-              
+
               // Add evaluation metrics if available
               if (evaluationMetrics) {
                 reportHTML += renderEvaluationMetrics(evaluationMetrics);
               }
-              
+
               bubble.innerHTML = reportHTML;
             } else {
               bubble.innerHTML = renderMarkdownLite(fullText);
@@ -2244,6 +2354,31 @@
 
           // Persist bot response to server
           persistMessage(chatId, botMsg);
+
+          // Auto-refresh graph after deep research completes (graph is now populated)
+          if (isDeep && evaluationMetrics) {
+            console.log('Deep research complete — clearing old graph and loading new data');
+            // Clear stale graph state so new data replaces it entirely
+            clearGraphVisualization();
+            // If modal is open, immediately load the fresh graph
+            if (document.getElementById('graph-modal').classList.contains('visible')) {
+              loadGraphData().catch(e => console.warn('Graph refresh failed:', e));
+            }
+
+            // Add a helpful message about the graph
+            setTimeout(() => {
+              const graphNotice = {
+                id: generateId(),
+                role: 'bot',
+                type: 'text',
+                content: '🔗 **Knowledge Graph Updated!** Click the graph icon in the sidebar to explore entity relationships and connections across your papers.',
+                time: formatTime(new Date())
+              };
+              messages.push(graphNotice);
+              appendMessageToDOM(graphNotice);
+              persistMessage(chatId, graphNotice);
+            }, 500);
+          }
 
         } catch (err) {
           removeTypingIndicator();
@@ -2409,9 +2544,8 @@
     async function openGraphModal() {
       const modal = document.getElementById('graph-modal');
       modal.classList.add('visible');
-      if (!cyInstance) {
-        await loadGraphData();
-      }
+      // Always fetch fresh data — never show stale/cached graph
+      await loadGraphData();
     }
 
     function closeGraphModal() {
@@ -2419,51 +2553,158 @@
     }
 
     async function refreshGraph() {
-      if (cyInstance) { cyInstance.destroy(); cyInstance = null; }
-      await loadGraphData();
+      // Show loading indicator
+      const btn = document.getElementById('btn-refresh-graph');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span>Loading...</span>';
+      }
+      
+      // Clear existing graph and force reload
+      clearGraphVisualization();
+      
+      try {
+        await loadGraphData();
+        console.log('Graph refreshed successfully');
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = `<svg fill="none" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg> Refresh`;
+        }
+      }
+    }
+
+    /**
+     * Clear all graph visualization state from DOM and JS memory.
+     * Removes cytoscape instance, legend, tooltip, detail panel, and buttons.
+     */
+    function clearGraphVisualization() {
+      if (cyInstance) {
+        cyInstance.destroy();
+        cyInstance = null;
+      }
+      // Remove dynamically created graph UI elements
+      ['graph-legend', 'graph-tooltip', 'graph-detail-panel', 'graph-show-all', 'graph-fit-btn'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.remove();
+      });
+      // Show placeholder in the container
+      const container = document.getElementById('cy');
+      if (container) {
+        container.innerHTML = '';
+        showGraphPlaceholder(container);
+      }
+    }
+
+    /**
+     * Show the empty-state placeholder inside the graph container.
+     */
+    function showGraphPlaceholder(container) {
+      container.innerHTML = `
+        <div class="graph-placeholder">
+          <div class="placeholder-icon">
+            <svg fill="none" viewBox="0 0 24 24" stroke-width="1.5">
+              <path stroke-linecap="round" stroke-linejoin="round"
+                d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+            </svg>
+          </div>
+          <h3>No graph data available</h3>
+          <p>Upload research papers and run a <strong>Deep Research</strong> query to generate a knowledge graph of entities and relationships.</p>
+        </div>
+      `;
+    }
+
+    /**
+     * Delete all graph data from both frontend and backend.
+     * Calls DELETE /graph_data, then clears the visualization.
+     */
+    async function deleteGraphData() {
+      if (!confirm('Are you sure you want to delete the knowledge graph? This will remove all graph data for your account.')) return;
+
+      const btn = document.getElementById('btn-delete-graph');
+      if (btn) { btn.disabled = true; btn.textContent = 'Deleting…'; }
+
+      try {
+        const resp = await fetch(API_BASE + '/graph_data', {
+          method: 'DELETE',
+          credentials: 'same-origin',
+        });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          throw new Error(err.detail || 'Delete request failed');
+        }
+        const result = await resp.json();
+        clearGraphVisualization();
+        console.log('Graph deleted:', result.message);
+      } catch (e) {
+        alert('Failed to delete graph: ' + e.message);
+        console.error('Delete graph error:', e);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = `<svg fill="none" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg> Delete Graph`;
+        }
+      }
     }
 
     async function loadGraphData() {
       const container = document.getElementById('cy');
-      container.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-secondary)">Loading graph data from Neo4j...</div>';
 
-      // Create or update legend
-      let legend = document.getElementById('graph-legend');
-      if (!legend) {
-        legend = document.createElement('div');
-        legend.id = 'graph-legend';
-        legend.style.cssText = 'position:absolute;top:12px;left:12px;background:rgba(255,255,255,0.95);border:1px solid #e8eaf0;border-radius:10px;padding:12px 14px;font-size:11px;z-index:10;box-shadow:0 2px 8px rgba(0,0,0,0.1);';
-        const legendTypes = ['method', 'dataset', 'metric', 'chunking_method', 'retrieval_method', 'embedding', 'concept', 'Paper', 'category'];
-        legend.innerHTML = '<div style="font-weight:700;margin-bottom:6px;font-size:12px;">Entity Types</div>' +
-          legendTypes.filter(k => ENTITY_COLORS[k]).map(type => {
-            const c = ENTITY_COLORS[type];
-            const shape = type === 'Paper' ? '50%' : type === 'category' ? '2px' : '3px';
-            const label = type.replace(/_/g, ' ');
-            return `<div style="display:flex;align-items:center;gap:6px;margin:3px 0;">
-              <span style="width:12px;height:12px;border-radius:${shape};background:${c.bg};border:1.5px solid ${c.border};display:inline-block;"></span>
-              <span style="text-transform:capitalize;">${label}</span>
-            </div>`;
-          }).join('');
-        container.parentElement.style.position = 'relative';
-        container.parentElement.appendChild(legend);
+      // ── Destroy previous graph instance to prevent cumulative rendering ──
+      if (cyInstance) {
+        cyInstance.destroy();
+        cyInstance = null;
       }
+      // Remove old dynamic overlays from previous render
+      ['graph-legend', 'graph-tooltip', 'graph-detail-panel', 'graph-show-all', 'graph-fit-btn'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.remove();
+      });
+
+      container.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-secondary)">Loading graph data…</div>';
+
+      // Create legend
+      const legend = document.createElement('div');
+      legend.id = 'graph-legend';
+      legend.style.cssText = 'position:absolute;top:12px;left:12px;background:rgba(255,255,255,0.95);border:1px solid #e8eaf0;border-radius:10px;padding:12px 14px;font-size:11px;z-index:10;box-shadow:0 2px 8px rgba(0,0,0,0.1);';
+      const legendTypes = ['method', 'dataset', 'metric', 'chunking_method', 'retrieval_method', 'embedding', 'concept', 'Paper', 'category'];
+      legend.innerHTML = '<div style="font-weight:700;margin-bottom:6px;font-size:12px;">Entity Types</div>' +
+        legendTypes.filter(k => ENTITY_COLORS[k]).map(type => {
+          const c = ENTITY_COLORS[type];
+          const shape = type === 'Paper' ? '50%' : type === 'category' ? '2px' : '3px';
+          const label = type.replace(/_/g, ' ');
+          return `<div style="display:flex;align-items:center;gap:6px;margin:3px 0;">
+            <span style="width:12px;height:12px;border-radius:${shape};background:${c.bg};border:1.5px solid ${c.border};display:inline-block;"></span>
+            <span style="text-transform:capitalize;">${label}</span>
+          </div>`;
+        }).join('');
+      container.parentElement.style.position = 'relative';
+      container.parentElement.appendChild(legend);
 
       // Tooltip element
-      let tooltip = document.getElementById('graph-tooltip');
-      if (!tooltip) {
-        tooltip = document.createElement('div');
-        tooltip.id = 'graph-tooltip';
-        tooltip.style.cssText = 'display:none;position:absolute;background:#1a1a2e;color:#e2e8f0;padding:10px 14px;border-radius:8px;font-size:12px;max-width:280px;z-index:20;pointer-events:none;box-shadow:0 4px 16px rgba(0,0,0,0.3);line-height:1.5;';
-        container.parentElement.appendChild(tooltip);
-      }
+      const tooltip = document.createElement('div');
+      tooltip.id = 'graph-tooltip';
+      tooltip.style.cssText = 'display:none;position:absolute;background:#1a1a2e;color:#e2e8f0;padding:10px 14px;border-radius:8px;font-size:12px;max-width:280px;z-index:20;pointer-events:none;box-shadow:0 4px 16px rgba(0,0,0,0.3);line-height:1.5;';
+      container.parentElement.appendChild(tooltip);
 
       try {
-        const resp = await fetch(API_BASE + '/graph_data', { credentials: 'same-origin' });
+        // Add cache-busting timestamp to force fresh data
+        const cacheBuster = new Date().getTime();
+        const resp = await fetch(API_BASE + '/graph_data?_=' + cacheBuster, { 
+          credentials: 'same-origin',
+          cache: 'no-store'  // Prevent browser caching
+        });
         if (!resp.ok) throw new Error('Failed to fetch graph data');
         const data = await resp.json();
 
         if (!data.nodes || data.nodes.length === 0) {
-          container.innerHTML = '<div style="padding:40px;text-align:center;color:#e17055;"><strong>\u26a0\ufe0f Neo4j Knowledge Graph Offline or Empty</strong><p style="margin-top:10px;color:var(--text-secondary);">Could not connect to Neo4j or no entities extracted yet. Run a Deep Research query first, then refresh.</p></div>';
+          // Remove legend/tooltip since there's nothing to show
+          legend.remove();
+          tooltip.remove();
+          showGraphPlaceholder(container);
           return;
         }
 
@@ -2881,7 +3122,7 @@
     function toggleWebSearch() {
       webSearchEnabled = !webSearchEnabled;
       updateWebSearchUI();
-      
+
       // Close dropdown after toggle
       document.getElementById('mode-dropdown').classList.remove('visible');
       document.getElementById('input-mode-btn').classList.remove('open');
@@ -2891,7 +3132,7 @@
       const optWebsearch = document.getElementById('opt-websearch');
       const statusEl = document.getElementById('websearch-status');
       const pill = document.getElementById('websearch-pill');
-      
+
       if (webSearchEnabled) {
         optWebsearch.classList.add('selected', 'websearch-on');
         statusEl.textContent = 'ON — Tavily/DuckDuckGo';

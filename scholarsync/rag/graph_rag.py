@@ -2,11 +2,10 @@
 GraphRAG engine — stores entities and relationships in Neo4j for
 cross-document reasoning, multi-hop queries, and entity linking.
 
-IMPROVED:
-  - Dynamic Neo4j relationship types (USES, IMPROVES_UPON, etc.)
-  - Rich graph export with relationship descriptions, entity types, degree
-  - Orphan node filtering
-  - Weighted edges based on relationship type
+Session-scoped design:
+  - Single global in-memory store, cleared on each new document upload
+  - Neo4j is wiped on each upload so it only holds the current session's data
+  - No user isolation — the graph always shows only the currently uploaded papers
 """
 
 from __future__ import annotations
@@ -32,45 +31,42 @@ logger = get_logger(__name__)
 # Module-level driver cache
 _driver = None
 
-# ── User-scoped in-memory graph store ─────────────────────────────────
-# Each user has isolated graph data to prevent cross-user leakage
-_user_graphs: dict[str, dict] = {}  # user_id -> {nodes: {}, edges: [], papers: {}}
+# ── Single global in-memory graph store ───────────────────────────────
+# Cleared on each new upload so the graph always reflects only the
+# currently uploaded research papers. No user-isolation complexity.
+_graph_store: dict = {
+    "nodes": {},   # normalized_name -> {name, entity_type, description, source_paper, category, degree}
+    "edges": [],   # [{source, target, rel_type, description, source_paper, weight}]
+    "papers": {},  # paper_id -> {title, authors, year}
+}
 
 
-def _get_user_graph(user_id: str) -> dict:
-    """Get or create user-scoped graph storage."""
-    if not user_id:
-        user_id = "__global__"  # Fallback for unauthenticated requests
-    if user_id not in _user_graphs:
-        _user_graphs[user_id] = {
-            "nodes": {},    # name -> {name, entity_type, description, source_paper, category, degree, user_id}
-            "edges": [],    # [{source, target, rel_type, description, source_paper, user_id}]
-            "papers": {},   # paper_id -> {title, authors, year, user_id}
-        }
-    return _user_graphs[user_id]
+def clear_graph_memory() -> None:
+    """Clear the in-memory graph. Called before each new upload."""
+    global _graph_store
+    _graph_store = {"nodes": {}, "edges": [], "papers": {}}
+    logger.info("In-memory graph store cleared for new session")
 
 
-def clear_user_graph(user_id: str) -> None:
-    """Clear all graph data for a specific user. Called on new paper upload."""
-    if user_id in _user_graphs:
-        del _user_graphs[user_id]
-        logger.info("Cleared in-memory graph for user: %s", user_id[:8] if user_id else "global")
+def clear_user_graph(user_id: str = "") -> None:
+    """Backward-compat alias — clears the global graph store."""
+    clear_graph_memory()
 
 
 def _memory_add_node(name: str, entity_type: str, description: str, source_paper: str, user_id: str = "") -> None:
-    """Add or update a node in the user-scoped in-memory graph."""
-    graph = _get_user_graph(user_id)
+    """Add or update a node in the global in-memory graph.
+    Note: user_id parameter is ignored (kept for backward compatibility).
+    """
     key = normalize_entity_name(name)
-    existing = graph["nodes"].get(key)
+    existing = _graph_store["nodes"].get(key)
     if existing is None or len(description) > len(existing.get("description", "")):
-        graph["nodes"][key] = {
+        _graph_store["nodes"][key] = {
             "name": name,
             "entity_type": entity_type,
             "description": description,
             "source_paper": source_paper,
             "category": infer_category(Entity(name=name, entity_type=entity_type, description=description)),
             "degree": existing["degree"] if existing else 0,
-            "user_id": user_id,
         }
 
 
@@ -99,25 +95,25 @@ def _compute_edge_weight(rel_type: str, source_paper: str) -> float:
 
 
 def _memory_add_edge(source: str, target: str, rel_type: str, description: str, source_paper: str, user_id: str = "") -> None:
-    """Add an edge to the user-scoped in-memory graph with semantic weighting."""
-    graph = _get_user_graph(user_id)
+    """Add an edge to the global in-memory graph with semantic weighting.
+    Note: user_id parameter is ignored (kept for backward compatibility).
+    """
     weight = _compute_edge_weight(rel_type, source_paper)
-    graph["edges"].append({
+    _graph_store["edges"].append({
         "source": source,
         "target": target,
         "rel_type": rel_type,
         "description": description,
         "source_paper": source_paper,
         "weight": weight,
-        "user_id": user_id,
     })
     # Increment degree for connected nodes
     src_key = normalize_entity_name(source)
     tgt_key = normalize_entity_name(target)
-    if src_key in graph["nodes"]:
-        graph["nodes"][src_key]["degree"] = graph["nodes"][src_key].get("degree", 0) + 1
-    if tgt_key in graph["nodes"]:
-        graph["nodes"][tgt_key]["degree"] = graph["nodes"][tgt_key].get("degree", 0) + 1
+    if src_key in _graph_store["nodes"]:
+        _graph_store["nodes"][src_key]["degree"] = _graph_store["nodes"][src_key].get("degree", 0) + 1
+    if tgt_key in _graph_store["nodes"]:
+        _graph_store["nodes"][tgt_key]["degree"] = _graph_store["nodes"][tgt_key].get("degree", 0) + 1
 
 
 # Map of semantic relationship types to valid Neo4j relationship type names
@@ -210,10 +206,14 @@ def add_entities(entities: list[Entity], user_id: str = "") -> int:
         user_id: User ID for graph isolation (required for multi-user)
     """
     if not entities:
+        logger.warning("add_entities called with empty entity list for user %s", user_id[:8] if user_id else "global")
         return 0
 
+    logger.info("Adding %d entities to graph for user %s", len(entities), user_id[:8] if user_id else "global")
+    
     # Normalize and deduplicate before storage
     entities = deduplicate_entities(entities)
+    logger.info("After deduplication: %d unique entities", len(entities))
 
     # Always populate user-scoped in-memory graph
     for entity in entities:
@@ -420,8 +420,35 @@ def clear_graph():
         session.run("MATCH (n) DETACH DELETE n")
         logger.info("Knowledge graph cleared")
 
+
+def clear_all_graph_data() -> None:
+    """
+    Clear ALL graph data - both Neo4j and in-memory.
+    Called when new papers are uploaded to show only current session's graph.
+    """
+    global _graph_store
+    
+    # Clear in-memory graph store (CORRECT variable)
+    _graph_store["nodes"].clear()
+    _graph_store["edges"].clear()
+    _graph_store["papers"].clear()
+    logger.info("Cleared all in-memory graphs")
+    
+    # Clear Neo4j
+    try:
+        driver = get_driver()
+        with driver.session() as session:
+            session.run("MATCH (n) DETACH DELETE n")
+        logger.info("Cleared all Neo4j graph data")
+    except Exception as e:
+        logger.warning("Could not clear Neo4j (non-fatal): %s", e)
+
+
 def clear_user_graph_neo4j(user_id: str) -> None:
-    """Clear all Neo4j graph data for a specific user."""
+    """
+    DEPRECATED: Use clear_all_graph_data() instead.
+    Clear all Neo4j graph data for a specific user.
+    """
     if not user_id:
         return
     try:
@@ -439,16 +466,21 @@ def clear_user_graph_neo4j(user_id: str) -> None:
 
 def _get_memory_graph_cytoscape(user_id: str = "") -> dict:
     """
-    Build Cytoscape JSON from the user-scoped in-memory graph store.
+    Build Cytoscape JSON from the global in-memory graph store.
     Used as fallback when Neo4j is unavailable.
+    Note: user_id parameter is ignored (kept for backward compatibility).
     """
-    graph = _get_user_graph(user_id)
+    # Use global _graph_store directly (session-based, no user filtering)
+    logger.info("Building memory graph: %d nodes, %d edges in store", 
+                len(_graph_store["nodes"]), 
+                len(_graph_store["edges"]))
+    
     nodes = []
     edges = []
     node_id_map: dict[str, str] = {}  # normalized_name -> id
 
-    # Build nodes from user's graph
-    for idx, (key, node_data) in enumerate(graph["nodes"].items()):
+    # Build nodes from global graph store
+    for idx, (key, node_data) in enumerate(_graph_store["nodes"].items()):
         node_id = f"mem_{idx}"
         node_id_map[key] = node_id
         name = node_data["name"]
@@ -470,8 +502,8 @@ def _get_memory_graph_cytoscape(user_id: str = "") -> dict:
             }
         })
 
-    # Build edges from user's graph
-    for idx, edge_data in enumerate(graph["edges"]):
+    # Build edges from global graph store
+    for idx, edge_data in enumerate(_graph_store["edges"]):
         src_key = normalize_entity_name(edge_data["source"])
         tgt_key = normalize_entity_name(edge_data["target"])
         src_id = node_id_map.get(src_key)
@@ -509,12 +541,14 @@ def get_full_graph_data_cytoscape(user_id: str = "") -> dict:
     """
     Retrieve graph data and export in Cytoscape JSON format.
     
+    SESSION-BASED: When user_id is empty (default), returns ALL graph data.
+    Since graph is cleared on paper upload, this shows only current session's data.
+    
     Args:
-        user_id: User ID for filtering — returns only this user's graph data.
-                 If empty, returns empty graph (no cross-user leakage).
+        user_id: DEPRECATED - kept for backward compatibility but ignored when empty.
+                 If empty (default), returns all current graph data.
 
-    IMPROVED:
-      - User-scoped graph isolation (multi-user safe)
+    Features:
       - Tries Neo4j first; falls back to in-memory graph
       - Edge labels use semantic_type property (not generic Neo4j type)
       - Edge descriptions included for tooltips
@@ -523,7 +557,6 @@ def get_full_graph_data_cytoscape(user_id: str = "") -> dict:
       - Node degree included for sizing
       - Category nodes for hierarchical structure
     """
-    # If no user_id provided, return empty graph (safe default)
     try:
         driver = get_driver()
         driver.verify_connectivity()
@@ -531,16 +564,14 @@ def get_full_graph_data_cytoscape(user_id: str = "") -> dict:
         edges = []
 
         with driver.session() as session:
-            # FIX: Relaxed the MATCH clause to allow nodes saved without a strict user_id 
+            # SESSION-BASED: Fetch ALL graph data (no user filtering)
+            # Graph is cleared on upload, so this shows only current session's papers
             result = session.run(
                 """
                 MATCH (n)-[r]->(m)
-                WHERE (n.user_id = $user_id OR n.user_id IS NULL OR n.user_id = "")
-                  AND (m.user_id = $user_id OR m.user_id IS NULL OR m.user_id = "")
                 RETURN n, r, m, type(r) AS rel_type
                 LIMIT 1000
-                """,
-                user_id=user_id,
+                """
             )
             connected_node_ids = set()
 
@@ -630,10 +661,10 @@ def get_full_graph_data_cytoscape(user_id: str = "") -> dict:
         if connected_nodes:
             return {"nodes": connected_nodes, "edges": edges}
 
-        # Neo4j connected but empty for this user — try in-memory
-        logger.info("Neo4j graph empty for user %s, using in-memory graph", user_id[:8])
-        return _get_memory_graph_cytoscape(user_id)
+        # Neo4j connected but empty — try in-memory (session-based)
+        logger.info("Neo4j graph empty, using in-memory graph")
+        return _get_memory_graph_cytoscape("__global__")
 
     except Exception as e:
-        logger.info("Neo4j unavailable (%s) — using in-memory graph for user %s", e, user_id[:8] if user_id else "unknown")
-        return _get_memory_graph_cytoscape(user_id)
+        logger.info("Neo4j unavailable (%s) — using in-memory graph", str(e)[:50])
+        return _get_memory_graph_cytoscape("__global__")

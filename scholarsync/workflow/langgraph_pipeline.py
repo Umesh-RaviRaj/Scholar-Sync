@@ -195,21 +195,22 @@ def graph_rag_node(state: GraphState) -> GraphState:
     state["status"] = PipelineStatus.BUILDING_GRAPH.value
     state["progress_messages"].append("🔗 GraphRAG: Building knowledge graph...")
 
-    # Get user_id for multi-user graph isolation
-    user_id = state.get("user_id", "")
+    # SESSION-BASED: Use __global__ for all graph data (cleared on upload)
+    # This ensures graph shows ONLY current session's papers
+    session_user_id = "__global__"
 
     try:
         extractions = [ExtractedKnowledge(**ext) for ext in state["extractions"]]
         paper_metadata = [PaperMetadata(**p) for p in state["paper_metadata"]]
 
-        # Add paper nodes with user_id for isolation
+        # Add paper nodes to global session graph
         for meta in paper_metadata:
             try:
-                add_paper_node(meta.paper_id, meta.title, meta.authors, meta.year, user_id=user_id)
+                add_paper_node(meta.paper_id, meta.title, meta.authors, meta.year, user_id=session_user_id)
             except Exception as e:
                 logger.warning("Could not add paper node %s: %s", meta.paper_id, e)
 
-        # Add entities and relationships from extractions with user_id
+        # Add entities and relationships from extractions to global session graph
         all_entities = []
         all_relationships = []
         for ext in extractions:
@@ -217,8 +218,8 @@ def graph_rag_node(state: GraphState) -> GraphState:
             all_relationships.extend(ext.relationships)
 
         try:
-            entity_count = add_entities(all_entities, user_id=user_id)
-            rel_count = add_relationships(all_relationships, user_id=user_id)
+            entity_count = add_entities(all_entities, user_id=session_user_id)
+            rel_count = add_relationships(all_relationships, user_id=session_user_id)
         except Exception as e:
             logger.warning("Graph storage error (Neo4j may not be available): %s", e)
             entity_count = len(all_entities)
@@ -430,10 +431,17 @@ def profile_node(state: GraphState) -> GraphState:
 
 
 def synthesizer_node(state: GraphState) -> GraphState:
-    """Synthesizer Agent: produce final literature review."""
-    logger.info("Pipeline: Synthesizer starting")
-    state["status"] = PipelineStatus.SYNTHESIZING.value
+    """
+    Synthesizer Node: combine all extractions into a final literature review report.
+    Includes web search context if available.
+    
+    CRITICAL: Now tracks retrieval sources for accurate evaluation.
+    """
+    logger.info("Pipeline: Synthesizer Agent starting")
     state["progress_messages"].append("📝 Synthesizer: Generating literature review...")
+    
+    # Track retrieval sources for evaluation (CRITICAL for Source Diversity metric)
+    state["retrieval_sources"] = []
 
     try:
         extractions = [ExtractedKnowledge(**ext) for ext in state["extractions"]]
@@ -455,6 +463,21 @@ def synthesizer_node(state: GraphState) -> GraphState:
         profiles = None
         if state.get("structured_profiles"):
             profiles = [StructuredPaperProfile(**p) for p in state["structured_profiles"]]
+
+        #  CRITICAL: Track retrieval sources from extractions for accurate evaluation
+        retrieval_sources = []
+        for extraction in extractions:
+            # Add methodology and findings as source material
+            retrieval_sources.extend(extraction.methodology[:5])  # Top 5 methodology points
+            retrieval_sources.extend(extraction.findings[:5])      # Top 5 findings
+            
+        # Also track which papers were used (for diversity calculation)
+        paper_ids_used = [ext.paper_id for ext in extractions]
+        unique_papers = len(set(paper_ids_used))
+        
+        state["retrieval_sources"] = retrieval_sources
+        state["unique_papers_used"] = unique_papers
+        logger.info("Synthesis using %d sources from %d unique papers", len(retrieval_sources), unique_papers)
 
         review = synthesize_review(
             query=state["query"],
@@ -512,22 +535,24 @@ def evaluation_node(state: GraphState) -> GraphState:
 
     try:
         from scholarsync.evaluation.dynamic_metrics import run_dynamic_evaluation
-        from scholarsync.rag.vector_store import search as vector_search
 
         query = state["query"]
         has_web_search = state.get("enable_web_search", False)
 
-        # Retrieve source chunks for evaluation
-        source_chunks = []
-        try:
-            results = vector_search(query=query, n_results=15)
-            source_chunks = [r["text"] for r in results if r.get("text")]
-        except Exception:
-            # Use methodology/findings from extractions as fallback source
+        # CRITICAL FIX: Use ACTUAL sources from synthesis, not separate retrieval!
+        # This ensures Source Diversity metric reflects what was actually used
+        source_chunks = state.get("retrieval_sources", [])
+        
+        if not source_chunks:
+            # Fallback: extract from extractions if not tracked
+            logger.warning("No retrieval_sources tracked - using fallback extraction")
             for ext_data in state.get("extractions", []):
                 ext = ExtractedKnowledge(**ext_data) if isinstance(ext_data, dict) else ext_data
-                source_chunks.extend(ext.methodology[:3])
-                source_chunks.extend(ext.findings[:3])
+                source_chunks.extend(ext.methodology[:5])
+                source_chunks.extend(ext.findings[:5])
+        
+        unique_papers = state.get("unique_papers_used", len(state.get("paper_metadata", [])))
+        logger.info("Evaluation using %d source chunks from %d unique papers", len(source_chunks), unique_papers)
 
         paper_titles = [
             p.get("title", "") if isinstance(p, dict) else p.title

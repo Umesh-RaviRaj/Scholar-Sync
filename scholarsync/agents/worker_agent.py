@@ -78,14 +78,18 @@ BAD example entities (do NOT extract these):
 - {"name": "NVIDIA A100", "entity_type": "tool", "description": "GPU used for training"}
 - {"name": "Python 3.9", "entity_type": "tool", "description": "Programming language"}
 
-Rules:
-1. Only extract information actually present in the provided text.
-2. Include direct quotes from the text to support extractions.
+STRICT EXTRACTION RULES (NO EXCEPTIONS):
+1. ONLY extract information explicitly present in the provided text. NO inferences.
+2. Include DIRECT QUOTES from the text to support every extraction.
 3. Be precise and concise — avoid vague generalizations.
 4. Cover ALL requested extraction categories thoroughly.
 5. Always provide entity relationships when entities are mentioned together.
-6. Do NOT hallucinate — only extract what is explicitly stated.
-7. Include SPECIFIC NUMBERS in findings (accuracy, F1, latency, etc.).
+6. DO NOT HALLUCINATE — if you cannot find explicit evidence, do not extract.
+7. ALWAYS include SPECIFIC NUMBERS: accuracy %, F1 score, latency (ms), dataset size, performance metrics, benchmark scores.
+8. For methodology: extract HOW it works, WHAT makes it different, SPECIFIC parameters/configurations.
+9. For findings: extract QUANTITATIVE results, comparisons, statistical significance.
+10. For entities: use full canonical names and include version numbers if mentioned (e.g., "BERT-base-uncased", "GPT-3.5-turbo").
+11. Quality over quantity: Better to extract 10 high-quality, well-supported claims than 50 vague ones.
 """
 
 
