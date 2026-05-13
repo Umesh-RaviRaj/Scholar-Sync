@@ -523,6 +523,12 @@ async def _stream_deep_research(
             yield {"event": "error", "data": "Pipeline failed to execute."}
             return
 
+        # Save the final state back to the session so /profiles can find it
+        if session is not None:
+            session["pipeline_state"] = final_state
+            from scholarsync.utils.schemas import PipelineStatus
+            session["status"] = PipelineStatus(final_state.get("status", "completed"))
+
         report_md = final_state.get("report_markdown", "")
         if report_md:
             yield {"event": "progress", "data": "✅ Report generated successfully."}

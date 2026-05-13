@@ -16,9 +16,187 @@ from scholarsync.utils.schemas import (
     ExtractedKnowledge,
     StructuredPaperProfile,
     PaperMetadata,
+    Flashcard,
 )
 
 logger = get_logger(__name__)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FLASHCARD INTELLIGENCE SYSTEM — Zero-Cost Deterministic Study Card Generation
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _safe_get_item(lst: list, index: int, default: str = "") -> str:
+    """Safely get an item from a list by index with fallback."""
+    try:
+        if lst and len(lst) > index:
+            item = lst[index]
+            return str(item).strip() if item else default
+        return default
+    except (IndexError, TypeError):
+        return default
+
+
+def _safe_trim_text(text: str, max_length: int = 200, preserve_words: bool = True) -> str:
+    """
+    Safely trim text to max_length while preserving readability.
+    
+    Args:
+        text: Input text to trim
+        max_length: Maximum character length
+        preserve_words: If True, avoid breaking mid-word
+    
+    Returns:
+        Trimmed text, never empty (returns fallback if input is empty)
+    """
+    if not text or not text.strip():
+        return "Not specified in text"
+    
+    text = text.strip()
+    
+    if len(text) <= max_length:
+        return text
+    
+    if preserve_words:
+        # Trim at last space before max_length to avoid broken words
+        trimmed = text[:max_length]
+        last_space = trimmed.rfind(' ')
+        if last_space > max_length * 0.6:  # Only use space if it's reasonably far
+            trimmed = trimmed[:last_space]
+        return trimmed.rstrip('.,;:') + "..."
+    
+    return text[:max_length - 3] + "..."
+
+
+def _extract_summary_from_extractions(
+    findings: list[str],
+    claims: list[str],
+    methodology: list[str],
+) -> str:
+    """
+    Build a research objective summary from available extraction data.
+    Prioritizes claims about research goals, then findings, then methodology.
+    """
+    # Look for objective-indicating phrases in claims
+    objective_keywords = ("address", "propose", "introduce", "present", "develop", "aim", "goal", "objective")
+    for claim in claims:
+        claim_lower = claim.lower()
+        if any(kw in claim_lower for kw in objective_keywords):
+            return _safe_trim_text(claim, 200)
+    
+    # Fall back to first significant finding
+    if findings:
+        return _safe_trim_text(findings[0], 200)
+    
+    # Fall back to methodology description
+    if methodology:
+        return _safe_trim_text(methodology[0], 200)
+    
+    return "Not specified in text"
+
+
+def generate_flashcards(
+    extraction: ExtractedKnowledge,
+    all_findings: list[str] | None = None,
+    all_claims: list[str] | None = None,
+    all_methodology: list[str] | None = None,
+    all_risks: list[str] | None = None,
+) -> list[Flashcard]:
+    """
+    Generate exactly 5 deterministic study flashcards from extracted knowledge.
+    
+    ZERO LLM COST — Pure Python transformation of existing structured data.
+    
+    Flashcard Structure:
+        1. Research Objective — What problem does this paper address?
+        2. Key Finding I — Primary discovery/result
+        3. Key Finding II — Secondary discovery/result
+        4. Methodology — How was the research conducted?
+        5. Critical Takeaway — Most important insight or risk
+    
+    Args:
+        extraction: ExtractedKnowledge object for a single paper
+        all_findings: Optional aggregated findings (for multi-extraction papers)
+        all_claims: Optional aggregated claims
+        all_methodology: Optional aggregated methodology
+        all_risks: Optional aggregated risks
+    
+    Returns:
+        Exactly 5 Flashcard objects (never fails, uses fallbacks)
+    """
+    # Use provided aggregated data or fall back to extraction fields
+    findings = all_findings if all_findings else extraction.findings
+    claims = all_claims if all_claims else extraction.claims
+    methodology = all_methodology if all_methodology else extraction.methodology
+    risks = all_risks if all_risks else extraction.risks
+    
+    paper_id = extraction.paper_id
+    paper_title = extraction.paper_title or "Unknown Paper"
+    
+    flashcards: list[Flashcard] = []
+    
+    # ── Flashcard 1: Research Objective ──────────────────────────────────
+    objective_text = _extract_summary_from_extractions(findings, claims, methodology)
+    flashcards.append(Flashcard(
+        front=f"Research Objective: {paper_title[:50]}{'...' if len(paper_title) > 50 else ''}",
+        back=objective_text,
+        category="objective",
+        source_paper=paper_id,
+    ))
+    
+    # ── Flashcard 2: Key Finding I ───────────────────────────────────────
+    finding_1 = _safe_get_item(findings, 0, "Not specified in text")
+    flashcards.append(Flashcard(
+        front="Key Finding I",
+        back=_safe_trim_text(finding_1, 250),
+        category="finding",
+        source_paper=paper_id,
+    ))
+    
+    # ── Flashcard 3: Key Finding II ──────────────────────────────────────
+    finding_2 = _safe_get_item(findings, 1, "Not specified in text")
+    flashcards.append(Flashcard(
+        front="Key Finding II",
+        back=_safe_trim_text(finding_2, 250),
+        category="finding",
+        source_paper=paper_id,
+    ))
+    
+    # ── Flashcard 4: Methodology ─────────────────────────────────────────
+    method_text = _safe_get_item(methodology, 0, "Not specified in text")
+    flashcards.append(Flashcard(
+        front="Methodology",
+        back=_safe_trim_text(method_text, 250),
+        category="methodology",
+        source_paper=paper_id,
+    ))
+    
+    # ── Flashcard 5: Critical Takeaway ───────────────────────────────────
+    # Priority: first claim > first risk > fallback
+    takeaway = _safe_get_item(claims, 0, "")
+    if not takeaway:
+        takeaway = _safe_get_item(risks, 0, "Not specified in text")
+    if not takeaway:
+        takeaway = "Not specified in text"
+    
+    flashcards.append(Flashcard(
+        front="Critical Takeaway",
+        back=_safe_trim_text(takeaway, 250),
+        category="takeaway",
+        source_paper=paper_id,
+    ))
+    
+    # Guarantee exactly 5 cards
+    assert len(flashcards) == 5, f"Flashcard generation failed: expected 5, got {len(flashcards)}"
+    
+    logger.info(
+        "Generated %d flashcards for paper '%s' (ID: %s)",
+        len(flashcards),
+        paper_title[:40] if paper_title else "Unknown",
+        paper_id[:8] if paper_id else "unknown"
+    )
+    
+    return flashcards
 
 # ── Keyword matchers for classification ──────────────────────────────
 
@@ -176,6 +354,35 @@ def build_paper_profiles(
                 best_use_case = c
                 break
 
+        # ── Generate Flashcards (Flashcard Intelligence System) ──
+        # Zero-cost deterministic generation from aggregated extraction data
+        paper_flashcards: list[Flashcard] = []
+        try:
+            # Use the first extraction as base, with aggregated data
+            base_extraction = exts[0] if exts else ExtractedKnowledge(
+                subtask_type=exts[0].subtask_type if exts else "entities",
+                paper_id=paper_id,
+                paper_title=title,
+            )
+            paper_flashcards = generate_flashcards(
+                extraction=base_extraction,
+                all_findings=all_findings,
+                all_claims=all_claims,
+                all_methodology=all_methodology,
+                all_risks=all_risks,
+            )
+            logger.info("✅ Flashcards integrated into profile for '%s'", title[:40])
+        except Exception as e:
+            logger.error("❌ Flashcard generation failed for %s: %s", paper_id[:8], e)
+            # Provide fallback empty flashcards to maintain structure
+            paper_flashcards = [
+                Flashcard(front="Research Objective", back="Not available", category="objective", source_paper=paper_id),
+                Flashcard(front="Key Finding I", back="Not available", category="finding", source_paper=paper_id),
+                Flashcard(front="Key Finding II", back="Not available", category="finding", source_paper=paper_id),
+                Flashcard(front="Methodology", back="Not available", category="methodology", source_paper=paper_id),
+                Flashcard(front="Critical Takeaway", back="Not available", category="takeaway", source_paper=paper_id),
+            ]
+
         profile = StructuredPaperProfile(
             paper_id=paper_id,
             paper_title=title,
@@ -192,8 +399,14 @@ def build_paper_profiles(
             scalability=scalability_notes[:200],
             best_use_case=best_use_case[:200],
             key_contributions=key_contributions[:6],
+            flashcards=paper_flashcards,
         )
         profiles.append(profile)
 
-    logger.info("Profile builder: created %d structured profiles", len(profiles))
+    total_flashcards = sum(len(p.flashcards) for p in profiles)
+    logger.info(
+        "Profile builder: created %d profiles with %d flashcards (5 per paper)",
+        len(profiles),
+        total_flashcards,
+    )
     return profiles

@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     manager_max_tokens: int = 1024     # Only needs a short JSON task list
     worker_max_tokens: int = 3072      # Structured extraction output
     checker_max_tokens: int = 1536     # Validation JSON is compact
-    synthesizer_max_tokens: int = 6000 # Full literature review
+    synthesizer_max_tokens: int = 8000 # Extended literature review (research-grade depth)
     worker_chunk_count: int = 8        # Chunks retrieved per worker call
 
     # ── Pipeline budget ──────────────────────────────────────────

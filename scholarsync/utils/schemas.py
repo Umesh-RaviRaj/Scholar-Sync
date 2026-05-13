@@ -94,6 +94,20 @@ class ExtractedKnowledge(BaseModel):
     relationships: list[Relationship] = Field(default_factory=list)
 
 
+# ── Flashcard Model ───────────────────────────────────────────────────
+
+class Flashcard(BaseModel):
+    """A single study flashcard for rapid revision and concept retention.
+    
+    Deterministically generated from extracted knowledge — zero LLM cost.
+    Part of the Research Flashcard Intelligence System.
+    """
+    front: str = Field(..., description="Question or concept title (brief, memorable)")
+    back: str = Field(..., description="Answer or explanation (concise, high-value)")
+    category: str = Field(default="general", description="Flashcard type: objective, finding, methodology, takeaway")
+    source_paper: str = Field(default="", description="Paper ID this flashcard was derived from")
+
+
 # ── Structured Paper Profile ──────────────────────────────────────────
 
 class StructuredPaperProfile(BaseModel):
@@ -114,6 +128,8 @@ class StructuredPaperProfile(BaseModel):
     scalability: str = ""
     best_use_case: str = ""
     key_contributions: list[str] = Field(default_factory=list)
+    # Flashcard Intelligence System — deterministic study cards
+    flashcards: list[Flashcard] = Field(default_factory=list, description="Auto-generated study flashcards for rapid revision")
 
 
 # ── Subtask Model ────────────────────────────────────────────────────

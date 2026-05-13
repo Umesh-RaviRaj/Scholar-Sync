@@ -341,6 +341,85 @@ async def get_report(session_id: str):
     )
 
 
+# ── Profiles Endpoint (Flashcard Intelligence System) ─────────────────
+
+@app.get("/profiles")
+async def get_profiles(session_id: str = None):
+    """
+    Get structured paper profiles with flashcards for the current session.
+    
+    Used by the Flashcard Intelligence System to provide study cards.
+    Returns profiles from the most recent completed pipeline.
+    """
+    try:
+        logger.info("Profiles request - session_id: %s, total sessions: %d", session_id or "auto", len(sessions))
+        
+        # Find the most recent session with profiles
+        target_session = None
+        target_session_id = None
+        
+        if session_id and session_id in sessions:
+            target_session = sessions.get(session_id)
+            target_session_id = session_id
+            if target_session:
+                logger.info("Using specified session: %s", session_id[:8])
+        
+        if not target_session:
+            # Find any session with profiles (iterate in reverse insertion order)
+            for sid, sess in reversed(list(sessions.items())):
+                if not sess or not isinstance(sess, dict):
+                    continue
+                pipeline_state = sess.get("pipeline_state")
+                if pipeline_state and isinstance(pipeline_state, dict):
+                    if pipeline_state.get("structured_profiles"):
+                        target_session = sess
+                        target_session_id = sid
+                        logger.info("Found session with profiles: %s (status: %s)", sid[:8], sess.get("status"))
+                        break
+        
+        if not target_session:
+            logger.warning("No session found with profiles")
+            return []
+        
+        pipeline_state = target_session.get("pipeline_state", {})
+        profiles_data = pipeline_state.get("structured_profiles", [])
+        
+        if not profiles_data:
+            logger.info("Session found but no profiles data")
+            return []
+        
+        # Convert to JSON-serializable format
+        profiles_json = []
+        for profile in profiles_data:
+            if hasattr(profile, 'model_dump'):
+                profiles_json.append(profile.model_dump())
+            elif isinstance(profile, dict):
+                profiles_json.append(profile)
+        
+        # Debug logging
+        total_flashcards = sum(len(p.get('flashcards', [])) for p in profiles_json)
+        logger.info(
+            "Profiles endpoint: returning %d profiles with %d total flashcards",
+            len(profiles_json),
+            total_flashcards
+        )
+        
+        # Log first profile structure for debugging
+        if profiles_json:
+            first_profile = profiles_json[0]
+            logger.info(
+                "First profile: title='%s', flashcard_count=%d",
+                first_profile.get('paper_title', 'Unknown')[:50],
+                len(first_profile.get('flashcards', []))
+            )
+        
+        return profiles_json
+        
+    except Exception as e:
+        logger.error("Profiles endpoint error: %s", e, exc_info=True)
+        return []
+
+
 # ── Graph Visualization ───────────────────────────────────────────────
 
 from fastapi import Request

@@ -1026,6 +1026,286 @@
       margin: 8px 0;
     }
 
+    /* ═══════════════════════════════════════════════════════════════════
+       FLASHCARD INTELLIGENCE SYSTEM — Technical Blueprint Theme
+       ═══════════════════════════════════════════════════════════════════ */
+    
+    .flashcard-modal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(10, 25, 47, 0.95);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+      backdrop-filter: blur(8px);
+    }
+
+    .flashcard-modal.visible {
+      display: flex;
+    }
+
+    .flashcard-modal-content {
+      width: 95vw;
+      max-width: 1400px;
+      max-height: 90vh;
+      background: linear-gradient(135deg, #0a192f 0%, #112240 100%);
+      border-radius: 20px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border: 1px solid rgba(100, 255, 218, 0.2);
+      box-shadow: 0 25px 80px rgba(0, 0, 0, 0.5), 0 0 60px rgba(100, 255, 218, 0.1);
+    }
+
+    .flashcard-modal-header {
+      padding: 20px 28px;
+      border-bottom: 1px solid rgba(100, 255, 218, 0.15);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: linear-gradient(90deg, rgba(100, 255, 218, 0.05), transparent);
+    }
+
+    .flashcard-modal-header h3 {
+      color: #64ffda;
+      font-size: 18px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .flashcard-modal-header .close-btn {
+      background: transparent;
+      border: 1px solid rgba(100, 255, 218, 0.3);
+      font-size: 20px;
+      cursor: pointer;
+      color: #64ffda;
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s ease;
+    }
+
+    .flashcard-modal-header .close-btn:hover {
+      background: rgba(100, 255, 218, 0.1);
+      border-color: #64ffda;
+    }
+
+    .flashcard-container {
+      flex: 1;
+      padding: 30px;
+      overflow-y: auto;
+      background: 
+        linear-gradient(rgba(100, 255, 218, 0.02) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(100, 255, 218, 0.02) 1px, transparent 1px);
+      background-size: 40px 40px;
+    }
+
+    .flashcard-paper-section {
+      margin-bottom: 40px;
+    }
+
+    .flashcard-paper-title {
+      color: #ccd6f6;
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 20px;
+      padding: 12px 18px;
+      background: rgba(100, 255, 218, 0.08);
+      border-left: 3px solid #64ffda;
+      border-radius: 0 8px 8px 0;
+    }
+
+    .flashcard-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 20px;
+    }
+
+    /* 3D Flip Card */
+    .flashcard {
+      perspective: 1200px;
+      height: 200px;
+      cursor: pointer;
+    }
+
+    .flashcard-inner {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      transition: transform 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+      transform-style: preserve-3d;
+    }
+
+    .flashcard.flipped .flashcard-inner {
+      transform: rotateY(180deg);
+    }
+
+    .flashcard-front,
+    .flashcard-back {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      backface-visibility: hidden;
+      border-radius: 16px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), 0 0 20px rgba(100, 255, 218, 0.05);
+    }
+
+    .flashcard-front {
+      background: linear-gradient(145deg, #112240, #1a365d);
+      border: 1px solid rgba(100, 255, 218, 0.25);
+    }
+
+    .flashcard-back {
+      background: linear-gradient(145deg, #1a365d, #112240);
+      border: 1px solid rgba(100, 255, 218, 0.4);
+      transform: rotateY(180deg);
+    }
+
+    .flashcard-category {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: #64ffda;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .flashcard-category::before {
+      content: '';
+      width: 8px;
+      height: 8px;
+      background: #64ffda;
+      border-radius: 50%;
+      box-shadow: 0 0 8px #64ffda;
+    }
+
+    .flashcard-question {
+      color: #e6f1ff;
+      font-size: 16px;
+      font-weight: 600;
+      flex: 1;
+      display: flex;
+      align-items: center;
+      line-height: 1.4;
+    }
+
+    .flashcard-answer {
+      color: #a8b2d1;
+      font-size: 14px;
+      line-height: 1.6;
+      flex: 1;
+      overflow-y: auto;
+    }
+
+    .flashcard-flip-hint {
+      font-size: 11px;
+      color: rgba(100, 255, 218, 0.5);
+      text-align: center;
+      margin-top: 12px;
+    }
+
+    .flashcard-stats {
+      display: flex;
+      justify-content: center;
+      gap: 30px;
+      padding: 20px;
+      border-top: 1px solid rgba(100, 255, 218, 0.1);
+      background: rgba(10, 25, 47, 0.5);
+    }
+
+    .flashcard-stat {
+      text-align: center;
+    }
+
+    .flashcard-stat-value {
+      font-size: 28px;
+      font-weight: 700;
+      color: #64ffda;
+      text-shadow: 0 0 20px rgba(100, 255, 218, 0.5);
+    }
+
+    .flashcard-stat-label {
+      font-size: 11px;
+      color: #8892b0;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-top: 4px;
+    }
+
+    .flashcard-empty {
+      text-align: center;
+      padding: 60px 40px;
+      color: #8892b0;
+    }
+
+    .flashcard-empty-icon {
+      width: 80px;
+      height: 80px;
+      background: rgba(100, 255, 218, 0.1);
+      border-radius: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 20px;
+    }
+
+    .flashcard-empty-icon svg {
+      width: 40px;
+      height: 40px;
+      stroke: #64ffda;
+    }
+
+    .flashcard-empty h3 {
+      color: #ccd6f6;
+      font-size: 18px;
+      margin-bottom: 10px;
+    }
+
+    /* Flashcard button in header */
+    .flashcard-header-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      background: rgba(100, 255, 218, 0.1);
+      color: #64ffda;
+      border: 1px solid rgba(100, 255, 218, 0.3);
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .flashcard-header-btn:hover {
+      background: rgba(100, 255, 218, 0.2);
+      border-color: #64ffda;
+      box-shadow: 0 0 15px rgba(100, 255, 218, 0.2);
+    }
+
+    .flashcard-header-btn svg {
+      width: 16px;
+      height: 16px;
+      stroke: currentColor;
+    }
+
     /* ─── File preview cards ─── */
     #file-preview {
       display: none;
@@ -1504,6 +1784,13 @@
           </div>
         </div>
         <div class="chat-header-actions">
+          <button class="flashcard-header-btn" title="Study Flashcards" onclick="openFlashcardModal()">
+            <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+            </svg>
+            Flashcards
+          </button>
           <button class="header-icon-btn" title="View Knowledge Graph" onclick="openGraphModal()"
             style="display:flex; align-items:center; gap:4px; font-size:12px; font-weight:600; padding:4px 10px; border-radius:6px; background:var(--accent-glow); color:var(--accent); border:none;">
             <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1667,6 +1954,39 @@
         </div>
       </div>
       <div id="cy" class="cy-container"></div>
+    </div>
+  </div>
+
+  <!-- Flashcard Modal Overlay -->
+  <div id="flashcard-modal" class="flashcard-modal">
+    <div class="flashcard-modal-content">
+      <div class="flashcard-modal-header">
+        <h3>
+          <svg width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+          </svg>
+          Research Flashcards
+        </h3>
+        <button class="close-btn" onclick="closeFlashcardModal()">&times;</button>
+      </div>
+      <div id="flashcard-container" class="flashcard-container">
+        <!-- Flashcards will be dynamically inserted here -->
+      </div>
+      <div class="flashcard-stats" id="flashcard-stats">
+        <div class="flashcard-stat">
+          <div class="flashcard-stat-value" id="stat-papers">0</div>
+          <div class="flashcard-stat-label">Papers</div>
+        </div>
+        <div class="flashcard-stat">
+          <div class="flashcard-stat-value" id="stat-cards">0</div>
+          <div class="flashcard-stat-label">Flashcards</div>
+        </div>
+        <div class="flashcard-stat">
+          <div class="flashcard-stat-value" id="stat-flipped">0</div>
+          <div class="flashcard-stat-label">Reviewed</div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -2648,6 +2968,176 @@
           btn.innerHTML = `<svg fill="none" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg> Delete Graph`;
         }
       }
+    }
+
+    /* ================================================================
+       FLASHCARD INTELLIGENCE SYSTEM — Frontend Implementation
+       ================================================================ */
+    
+    // Store flashcard data globally
+    let flashcardData = [];
+    let flippedCount = 0;
+
+    async function openFlashcardModal() {
+      const modal = document.getElementById('flashcard-modal');
+      modal.classList.add('visible');
+      await loadFlashcardData();
+    }
+
+    function closeFlashcardModal() {
+      document.getElementById('flashcard-modal').classList.remove('visible');
+    }
+
+    async function loadFlashcardData() {
+      const container = document.getElementById('flashcard-container');
+      container.innerHTML = '<div style="padding:40px;text-align:center;color:#8892b0">Loading flashcards...</div>';
+
+      try {
+        // Fetch profiles which contain flashcards
+        const cacheBuster = new Date().getTime();
+        const resp = await fetch(API_BASE + '/profiles?_=' + cacheBuster, {
+          credentials: 'same-origin',
+          cache: 'no-store'
+        });
+        
+        if (!resp.ok) {
+          // If profiles endpoint doesn't exist, show empty state
+          showFlashcardEmpty(container);
+          return;
+        }
+        
+        const profiles = await resp.json();
+        
+        console.log('Flashcard data received:', {
+          profileCount: profiles?.length || 0,
+          profiles: profiles,
+          hasFlashcards: profiles?.some(p => p.flashcards && p.flashcards.length > 0)
+        });
+        
+        if (!profiles || profiles.length === 0 || !profiles.some(p => p.flashcards && p.flashcards.length > 0)) {
+          console.warn('No flashcards found in profiles');
+          showFlashcardEmpty(container);
+          return;
+        }
+
+        // Store data and render
+        flashcardData = profiles;
+        flippedCount = 0;
+        renderFlashcards(container, profiles);
+        updateFlashcardStats(profiles);
+        
+      } catch (e) {
+        console.error('Flashcard load error:', e);
+        showFlashcardEmpty(container);
+      }
+    }
+
+    function showFlashcardEmpty(container) {
+      container.innerHTML = `
+        <div class="flashcard-empty">
+          <div class="flashcard-empty-icon">
+            <svg fill="none" viewBox="0 0 24 24" stroke-width="1.5">
+              <path stroke-linecap="round" stroke-linejoin="round"
+                d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+            </svg>
+          </div>
+          <h3>No Flashcards Available</h3>
+          <p>Upload research papers and run a <strong>Deep Research</strong> query to automatically generate study flashcards for each paper.</p>
+        </div>
+      `;
+      document.getElementById('stat-papers').textContent = '0';
+      document.getElementById('stat-cards').textContent = '0';
+      document.getElementById('stat-flipped').textContent = '0';
+    }
+
+    function renderFlashcards(container, profiles) {
+      container.innerHTML = '';
+      
+      profiles.forEach((profile, pIdx) => {
+        if (!profile.flashcards || profile.flashcards.length === 0) return;
+        
+        const section = document.createElement('div');
+        section.className = 'flashcard-paper-section';
+        
+        const title = document.createElement('div');
+        title.className = 'flashcard-paper-title';
+        title.textContent = profile.paper_title || `Paper ${pIdx + 1}`;
+        section.appendChild(title);
+        
+        const grid = document.createElement('div');
+        grid.className = 'flashcard-grid';
+        
+        profile.flashcards.forEach((card, cIdx) => {
+          const cardEl = createFlashcardElement(card, pIdx, cIdx);
+          grid.appendChild(cardEl);
+        });
+        
+        section.appendChild(grid);
+        container.appendChild(section);
+      });
+    }
+
+    function createFlashcardElement(card, paperIdx, cardIdx) {
+      const div = document.createElement('div');
+      div.className = 'flashcard';
+      div.dataset.paperIdx = paperIdx;
+      div.dataset.cardIdx = cardIdx;
+      
+      const categoryLabel = getCategoryLabel(card.category || 'general');
+      
+      div.innerHTML = `
+        <div class="flashcard-inner">
+          <div class="flashcard-front">
+            <div class="flashcard-category">${categoryLabel}</div>
+            <div class="flashcard-question">${escapeHtml(card.front)}</div>
+            <div class="flashcard-flip-hint">Click to reveal answer</div>
+          </div>
+          <div class="flashcard-back">
+            <div class="flashcard-category">${categoryLabel}</div>
+            <div class="flashcard-answer">${escapeHtml(card.back)}</div>
+          </div>
+        </div>
+      `;
+      
+      div.addEventListener('click', () => {
+        const wasFlipped = div.classList.contains('flipped');
+        div.classList.toggle('flipped');
+        
+        if (!wasFlipped && !div.dataset.counted) {
+          div.dataset.counted = 'true';
+          flippedCount++;
+          document.getElementById('stat-flipped').textContent = flippedCount;
+        }
+      });
+      
+      return div;
+    }
+
+    function getCategoryLabel(category) {
+      const labels = {
+        'objective': 'Research Objective',
+        'finding': 'Key Finding',
+        'methodology': 'Methodology',
+        'takeaway': 'Critical Takeaway',
+        'general': 'Insight'
+      };
+      return labels[category] || labels.general;
+    }
+
+    function updateFlashcardStats(profiles) {
+      const paperCount = profiles.filter(p => p.flashcards && p.flashcards.length > 0).length;
+      const cardCount = profiles.reduce((sum, p) => sum + (p.flashcards ? p.flashcards.length : 0), 0);
+      
+      document.getElementById('stat-papers').textContent = paperCount;
+      document.getElementById('stat-cards').textContent = cardCount;
+      document.getElementById('stat-flipped').textContent = flippedCount;
+    }
+
+    function escapeHtml(text) {
+      if (!text) return '';
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
     }
 
     async function loadGraphData() {
