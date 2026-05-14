@@ -157,15 +157,7 @@ You MUST produce valid JSON with this structure:
   6. PRACTICAL GAPS: What production scenarios are unaddressed? [cite]
   7. HYBRID OPPORTUNITIES: What cross-pollination between approaches could yield improvements? [cite basis]
   
-  Prioritize gaps by potential impact and feasibility.",
-
-  "safety_scorecard": {
-    "grounding_score": 0.92,
-    "citation_coverage": 0.95,
-    "cross_reference_score": 0.88,
-    "hallucination_risk": 0.05,
-    "overall_quality": 0.90
-  }
+  Prioritize gaps by potential impact and feasibility."
 }
 
 CRITICAL RULES (STRICT - NO EXCEPTIONS):
@@ -357,16 +349,6 @@ Output valid JSON only."""
         logger.error("Synthesizer: failed to parse JSON response")
         data = {}
 
-    safety_scorecard = data.get("safety_scorecard", {})
-    if not safety_scorecard:
-        safety_scorecard = {
-            "grounding_score": avg_score,
-            "citation_coverage": 0.0,
-            "cross_reference_score": 0.0,
-            "hallucination_risk": 1.0 - avg_score,
-            "overall_quality": avg_score,
-        }
-
     review = LiteratureReview(
         title=data.get("title", f"Literature Review: {query}"),
         summary=data.get("summary", ""),
@@ -376,7 +358,7 @@ Output valid JSON only."""
         identified_risks=data.get("identified_risks", ""),
         research_gaps=data.get("research_gaps", ""),
         citations=citations,
-        safety_scorecard=safety_scorecard,
+        safety_scorecard={},  # Deprecated - kept for schema compatibility
         generated_at=datetime.utcnow(),
     )
 
@@ -429,19 +411,6 @@ def format_review_as_markdown(review: LiteratureReview) -> str:
     if review.research_gaps:
         lines.append("## Research Gaps & Future Directions\n")
         lines.append(review.research_gaps)
-        lines.append("")
-
-    # Safety Scorecard
-    if review.safety_scorecard:
-        lines.append("## Safety & Quality Scorecard\n")
-        lines.append("| Metric | Score |")
-        lines.append("|--------|-------|")
-        for metric, score in review.safety_scorecard.items():
-            display_name = metric.replace("_", " ").title()
-            if isinstance(score, float):
-                lines.append(f"| {display_name} | {score:.2f} |")
-            else:
-                lines.append(f"| {display_name} | {score} |")
         lines.append("")
 
     # Citations
